@@ -205,24 +205,36 @@ export function normalizeEntries(entries: readonly WriteEntry[]): WriteEntry[] {
     );
 }
 
-/** Directory-form rules, for backends that mount subtrees. */
+/** Directory-form rules, for backends that mount subtrees. Sorted for stable output. */
 export function writableDirs(policy: CompiledPolicy): string[] {
-    return policy.writable.filter((entry) => entry.form === "dir").map((entry) => entry.path);
+    return policy.writable
+        .filter((entry) => entry.form === "dir")
+        .map((entry) => entry.path)
+        .sort();
 }
 
-/** File-form writable rules. */
+/** File-form writable rules, sorted. */
 export function writableFiles(policy: CompiledPolicy): string[] {
-    return policy.writable.filter((entry) => entry.form === "file").map((entry) => entry.path);
+    return policy.writable
+        .filter((entry) => entry.form === "file")
+        .map((entry) => entry.path)
+        .sort();
 }
 
-/** Directory-form denied rules. */
+/** Directory-form denied rules, sorted. */
 export function denyDirs(policy: CompiledPolicy): string[] {
-    return policy.denied.filter((entry) => entry.form === "dir").map((entry) => entry.path);
+    return policy.denied
+        .filter((entry) => entry.form === "dir")
+        .map((entry) => entry.path)
+        .sort();
 }
 
-/** File-form denied rules. */
+/** File-form denied rules, sorted. */
 export function denyFiles(policy: CompiledPolicy): string[] {
-    return policy.denied.filter((entry) => entry.form === "file").map((entry) => entry.path);
+    return policy.denied
+        .filter((entry) => entry.form === "file")
+        .map((entry) => entry.path)
+        .sort();
 }
 
 /**
