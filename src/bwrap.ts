@@ -22,6 +22,7 @@
  * it is skipped, which fails closed, and reported.
  */
 
+import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -29,6 +30,62 @@ import { denyDirs, denyFiles, writableDirs, writableFiles, type CompiledPolicy }
 
 /** The bubblewrap executable name resolved from PATH. */
 export const BWRAP_EXECUTABLE = "bwrap";
+
+/** How to obtain the bubblewrap package on the common Linux distributions. */
+export const BWRAP_INSTALL_HINT =
+    "install bubblewrap: `sudo apt install bubblewrap` (Debian/Ubuntu), `sudo dnf install bubblewrap` (Fedora), `sudo pacman -S bubblewrap` (Arch), or `sudo zypper install bubblewrap` (openSUSE)";
+
+/**
+ * Why an installed `bwrap` can still refuse to start, and how to fix it.
+ *
+ * Ubuntu 24.04 and newer ship `kernel.apparmor_restrict_unprivileged_userns=1`,
+ * which lets AppArmor deny user-namespace creation to binaries that no profile
+ * grants `userns`. A `bwrap` in that state exits with "setting up uid map:
+ * Permission denied" and would otherwise look installed and healthy.
+ */
+export const BWRAP_USERNS_HINT =
+    "This is usually Ubuntu 24.04+ restricting unprivileged user namespaces with AppArmor: run `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` for a temporary fix, or install an AppArmor profile for /usr/bin/bwrap that grants `userns` to keep the restriction scoped to bwrap.";
+
+/** The result of asking the kernel to actually build one minimal sandbox. */
+export type BwrapProbe = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+
+/**
+ * The smallest sandbox that proves bubblewrap can create a mount and user
+ * namespace here: the same read-only root and fresh device tree the real launch
+ * uses, running a no-op shell.
+ */
+export const BWRAP_PROBE_ARGS: readonly string[] = [
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--",
+    "/bin/sh",
+    "-c",
+    "exit 0",
+];
+
+/**
+ * Run one minimal confined command and report whether the kernel allowed it.
+ *
+ * A `bwrap` that is on PATH but cannot create a namespace would otherwise be
+ * reported as a usable backend and then fail every command, so this is the
+ * difference between a resolved backend and a working one. The probe is tiny;
+ * callers cache the answer instead of re-running it per status repaint.
+ */
+export function probeBwrap(executable: string, timeoutMs = 10_000): BwrapProbe {
+    const result = spawnSync(executable, [...BWRAP_PROBE_ARGS], { encoding: "utf-8", timeout: timeoutMs });
+    if (result.error !== undefined) return { ok: false, reason: result.error.message };
+    if (result.status === 0) return { ok: true };
+    const stderr = (result.stderr ?? "").trim();
+    return { ok: false, reason: stderr === "" ? `bwrap exited with status ${result.status}` : stderr };
+}
+
+/** True when a probe failure looks like the kernel refusing a user namespace. */
+export function isUserNamespaceFailure(reason: string): boolean {
+    return /uid map|new namespace|user namespace|unshare/i.test(reason);
+}
 
 /** Injectable filesystem dependencies so argv planning is testable off Linux. */
 export type BwrapSeams = {

@@ -18,6 +18,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
 import type { LoadedMiniboxConfig, MiniboxConfig } from "./config.ts";
+import { BWRAP_INSTALL_HINT, BWRAP_USERNS_HINT, isUserNamespaceFailure, probeBwrap, type BwrapProbe } from "./bwrap.ts";
 import { canonicalizePath, type PathSeams } from "./paths.ts";
 import { compilePolicy, describeUnsafeProjectRoot, type CompiledPolicy } from "./policy.ts";
 
@@ -101,6 +102,11 @@ export type MiniboxSeams = {
     readonly isExecutable?: (path: string) => boolean;
     /** Overrides the platform temp directories; tests use this to stay isolated. */
     readonly tempDirs?: readonly string[];
+    /**
+     * Proves an installed `bwrap` can actually build a sandbox. Defaults to a
+     * real one-shot probe; injectable so tests stay hermetic and fast.
+     */
+    readonly probeBwrap?: (executable: string) => BwrapProbe;
 };
 
 /** The macOS sandbox launcher. */
@@ -122,9 +128,13 @@ export function executableFromPath(name: string, path = process.env.PATH): strin
     return undefined;
 }
 
-function unavailableMessage(platform: string): string {
+function unavailableMessage(platform: string, failure?: string): string {
     if (platform === "linux") {
-        return "the Linux backend needs the bubblewrap executable (bwrap) on PATH; install bubblewrap to use minibox here.";
+        if (failure === undefined) {
+            return `the Linux backend needs the bubblewrap executable (bwrap) on PATH; ${BWRAP_INSTALL_HINT}.`;
+        }
+        const base = `the bubblewrap executable (bwrap) is installed but cannot create a sandbox: ${failure}.`;
+        return isUserNamespaceFailure(failure) ? `${base} ${BWRAP_USERNS_HINT}` : base;
     }
     if (platform === "darwin") {
         return "the macOS backend needs /usr/bin/sandbox-exec, which is missing here.";
@@ -171,6 +181,19 @@ export function describeBackendSupport(seams: MiniboxSeams = {}): BackendSupport
                 reason: unavailableMessage(platform),
             };
         }
+        // Present on PATH is not the same as able to run: a host that restricts
+        // unprivileged user namespaces needs a clear reason, not a backend that
+        // is reported `on` and then fails every command.
+        const probe = (seams.probeBwrap ?? probeBwrap)(executable);
+        if (!probe.ok) {
+            return {
+                supported: false,
+                platform,
+                backend: undefined,
+                executable: undefined,
+                reason: unavailableMessage(platform, probe.reason),
+            };
+        }
         return { supported: true, platform, backend: "linux-bubblewrap", executable };
     }
 
@@ -195,6 +218,7 @@ export type BeginSessionInput = {
 
 export class MiniboxController {
     readonly #seams: MiniboxSeams;
+    readonly #probeCache = new Map<string, BwrapProbe>();
     #projectRoot: string | undefined;
     #unsafeRootReason: string | undefined;
     #agentDir = "";
@@ -208,7 +232,19 @@ export class MiniboxController {
     #onReload: ((loaded: LoadedMiniboxConfig) => void) | undefined;
 
     constructor(seams: MiniboxSeams = {}) {
-        this.#seams = seams;
+        // Probing bwrap spawns a process, and status() is repainted often, so the
+        // answer is memoized per executable for the life of the controller. An
+        // injected probe is cached too, which keeps tests deterministic.
+        const probe = seams.probeBwrap ?? probeBwrap;
+        this.#seams = { ...seams, probeBwrap: (executable: string) => this.#probe(executable, probe) };
+    }
+
+    #probe(executable: string, probe: (path: string) => BwrapProbe): BwrapProbe {
+        const cached = this.#probeCache.get(executable);
+        if (cached !== undefined) return cached;
+        const probed = probe(executable);
+        this.#probeCache.set(executable, probed);
+        return probed;
     }
 
     /** Capture the canonical launch directory for this session. */
@@ -300,7 +336,7 @@ export class MiniboxController {
 
     /** The current status, recomputed from live evidence. */
     status(): MiniboxStatus {
-        const support = describeBackendSupport(this.#seams);
+        const support = this.#backendSupport();
         const state = this.#effectiveState(support);
         const compiled = state === "enabled" ? this.#compile() : undefined;
 
@@ -359,12 +395,16 @@ export class MiniboxController {
         this.#profileDir = undefined;
     }
 
-    #effectiveState(support = describeBackendSupport(this.#seams)): MiniboxState {
+    #effectiveState(support = this.#backendSupport()): MiniboxState {
         if (this.#projectRoot === undefined) return "failed";
         if (!this.isEnabled()) return this.#sessionOverride === false ? "disabled" : "inactive";
         if (this.#unsafeRootReason !== undefined) return "failed";
         if (!support.supported) return "unavailable";
         return "enabled";
+    }
+
+    #backendSupport(): BackendSupport {
+        return describeBackendSupport(this.#seams);
     }
 
     #reasonFor(state: MiniboxState, support: BackendSupport): string {

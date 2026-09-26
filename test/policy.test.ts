@@ -247,10 +247,16 @@ describe("evaluateWriteAccess", () => {
     });
 
     it("decides on the canonical path, so a symlinked spelling cannot widen anything", () => {
-        const { policy } = compileWithTempDirs();
-        const decision = evaluateWriteAccess("/tmp/minibox-probe.txt", policy);
+        // macOS spells its temp tree `/tmp` while the kernel sees `/private/tmp`,
+        // so the spelling and the canonical path differ there. Use each
+        // platform's own temp baseline; the assertion that matters is that the
+        // decision was made on the canonical path.
+        const platform = process.platform === "linux" ? "linux" : "darwin";
+        const spelling = "/tmp/minibox-probe.txt";
+        const { policy } = compileWithTempDirs({ platform });
+        const decision = evaluateWriteAccess(spelling, policy);
 
-        assert.equal(decision.path, canonicalizePath("/tmp/minibox-probe.txt"));
+        assert.equal(decision.path, canonicalizePath(spelling));
         assert.equal(decision.allowed, true);
     });
 });

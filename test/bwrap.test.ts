@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { buildBwrapArgs, materializeDenyPath } from "../src/bwrap.ts";
+import { BWRAP_PROBE_ARGS, buildBwrapArgs, isUserNamespaceFailure, materializeDenyPath, probeBwrap } from "../src/bwrap.ts";
 import type { CompiledPolicy } from "../src/policy.ts";
 
 const policy: CompiledPolicy = {
@@ -114,6 +114,43 @@ describe("buildBwrapArgs", () => {
         const { fileArgs } = plan();
 
         assert.deepEqual(fileArgs.slice(-4), ["--", "/bin/bash", "-c", "echo hi"]);
+    });
+});
+
+describe("probeBwrap", () => {
+    it("probes with the same sandbox shape a real launch uses", () => {
+        assert.deepEqual(BWRAP_PROBE_ARGS.slice(0, 5), ["--ro-bind", "/", "/", "--dev", "/dev"]);
+        assert.deepEqual(BWRAP_PROBE_ARGS.slice(-3), ["/bin/sh", "-c", "exit 0"]);
+        assert.ok(BWRAP_PROBE_ARGS.includes("--"));
+    });
+
+    it("reports success when the probe process exits cleanly", () => {
+        assert.deepEqual(probeBwrap("/bin/true"), { ok: true });
+    });
+
+    it("reports the exit status when the probe fails without stderr", () => {
+        const probe = probeBwrap("/bin/false");
+
+        assert.equal(probe.ok, false);
+        assert.match(probe.ok === false ? probe.reason : "", /status 1/);
+    });
+
+    it("reports a missing executable instead of throwing", () => {
+        const probe = probeBwrap("/definitely/not/here");
+
+        assert.equal(probe.ok, false);
+        assert.match(probe.ok === false ? probe.reason : "", /ENOENT|no such file/i);
+    });
+});
+
+describe("isUserNamespaceFailure", () => {
+    it("recognizes the AppArmor denial Ubuntu 24.04 produces", () => {
+        assert.equal(isUserNamespaceFailure("bwrap: setting up uid map: Permission denied"), true);
+        assert.equal(isUserNamespaceFailure("bwrap: Creating new namespace failed: Operation not permitted"), true);
+    });
+
+    it("does not blame an unrelated failure on user namespaces", () => {
+        assert.equal(isUserNamespaceFailure("bwrap: execvp /bin/sh: No such file or directory"), false);
     });
 });
 

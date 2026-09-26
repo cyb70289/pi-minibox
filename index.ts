@@ -190,7 +190,16 @@ function resolveShellPath(cwd: string): string | undefined {
 
 export { createWriteGuard, readSessionApprovals } from "./src/guard.ts";
 export { compilePolicy, evaluateWriteAccess } from "./src/policy.ts";
-export { buildBwrapArgs, materializeDenyPath } from "./src/bwrap.ts";
+export {
+    BWRAP_INSTALL_HINT,
+    BWRAP_PROBE_ARGS,
+    BWRAP_USERNS_HINT,
+    buildBwrapArgs,
+    isUserNamespaceFailure,
+    materializeDenyPath,
+    probeBwrap,
+    type BwrapProbe,
+} from "./src/bwrap.ts";
 export { buildSeatbeltCommand, buildSeatbeltProfile } from "./src/seatbelt.ts";
 export { createMiniboxBashOperations, quoteForPosixShell } from "./src/shell.ts";
 export { footerText, formatStatusReport, FOOTER_KEY } from "./src/status.ts";
@@ -199,6 +208,7 @@ export {
     executableFromPath,
     MiniboxBlockedError,
     MiniboxController,
+    type BackendSupport,
     type MiniboxState,
     type MiniboxStatus,
 } from "./src/state.ts";

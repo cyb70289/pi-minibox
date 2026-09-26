@@ -68,13 +68,20 @@ describe("describeBackendSupport", () => {
         assert.match(support.supported === false ? support.reason : "", /sandbox-exec/);
     });
 
-    it("selects bubblewrap on Linux when bwrap resolves from PATH", () => {
-        assert.deepEqual(describeBackendSupport({ platform: () => "linux", lookupExecutable: () => "/usr/bin/bwrap" }), {
-            supported: true,
-            platform: "linux",
-            backend: "linux-bubblewrap",
-            executable: "/usr/bin/bwrap",
-        });
+    it("selects bubblewrap on Linux when bwrap resolves from PATH and can build a sandbox", () => {
+        assert.deepEqual(
+            describeBackendSupport({
+                platform: () => "linux",
+                lookupExecutable: () => "/usr/bin/bwrap",
+                probeBwrap: () => ({ ok: true }),
+            }),
+            {
+                supported: true,
+                platform: "linux",
+                backend: "linux-bubblewrap",
+                executable: "/usr/bin/bwrap",
+            },
+        );
     });
 
     it("reports Linux as unavailable without bubblewrap", () => {
@@ -82,6 +89,33 @@ describe("describeBackendSupport", () => {
 
         assert.equal(support.supported, false);
         assert.match(support.supported === false ? support.reason : "", /bubblewrap/);
+        assert.match(support.supported === false ? support.reason : "", /apt install bubblewrap/);
+    });
+
+    it("reports Linux as unavailable when bwrap exists but the kernel refuses a user namespace", () => {
+        const support = describeBackendSupport({
+            platform: () => "linux",
+            lookupExecutable: () => "/usr/bin/bwrap",
+            probeBwrap: () => ({ ok: false, reason: "bwrap: setting up uid map: Permission denied" }),
+        });
+
+        assert.equal(support.supported, false);
+        const reason = support.supported === false ? support.reason : "";
+        assert.match(reason, /cannot create a sandbox/);
+        assert.match(reason, /setting up uid map/);
+        assert.match(reason, /apparmor_restrict_unprivileged_userns/);
+    });
+
+    it("reports a non-namespace bwrap failure without the AppArmor advice", () => {
+        const support = describeBackendSupport({
+            platform: () => "linux",
+            lookupExecutable: () => "/usr/bin/bwrap",
+            probeBwrap: () => ({ ok: false, reason: "bwrap: execvp /bin/sh: No such file or directory" }),
+        });
+
+        const reason = support.supported === false ? support.reason : "";
+        assert.match(reason, /execvp/);
+        assert.doesNotMatch(reason, /apparmor_restrict_unprivileged_userns/);
     });
 
     it("reports an unsupported platform", () => {
@@ -94,7 +128,7 @@ describe("describeBackendSupport", () => {
 
 describe("executableFromPath", () => {
     it("finds an executable on the supplied PATH", () => {
-        assert.equal(executableFromPath("sandbox-exec", "/usr/bin"), "/usr/bin/sandbox-exec");
+        assert.equal(executableFromPath("sh", "/bin"), "/bin/sh");
     });
 
     it("returns undefined when nothing matches", () => {
@@ -147,6 +181,37 @@ describe("MiniboxController", () => {
         const status = session(instance);
 
         assert.equal(status.state, "unavailable");
+        assert.throws(() => instance.requireLaunchPlan(), MiniboxBlockedError);
+    });
+
+    it("probes an installed bwrap once and caches the answer across status calls", () => {
+        let calls = 0;
+        const instance = controller({
+            platform: () => "linux",
+            lookupExecutable: () => "/usr/bin/bwrap",
+            probeBwrap: () => {
+                calls += 1;
+                return { ok: true };
+            },
+        });
+
+        assert.equal(session(instance).state, "enabled");
+        instance.status();
+        instance.requireLaunchPlan();
+
+        assert.equal(calls, 1);
+    });
+
+    it("blocks instead of reporting enabled when the bwrap probe fails", () => {
+        const instance = controller({
+            platform: () => "linux",
+            lookupExecutable: () => "/usr/bin/bwrap",
+            probeBwrap: () => ({ ok: false, reason: "bwrap: setting up uid map: Permission denied" }),
+        });
+        const status = session(instance);
+
+        assert.equal(status.state, "unavailable");
+        assert.match(status.reason, /apparmor_restrict_unprivileged_userns/);
         assert.throws(() => instance.requireLaunchPlan(), MiniboxBlockedError);
     });
 

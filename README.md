@@ -16,6 +16,47 @@ pi -e /path/to/pi-minibox
 pi install /path/to/pi-minibox
 ```
 
+## Linux requirements
+
+Linux confinement needs [`bubblewrap`](https://github.com/containers/bubblewrap)
+(`bwrap`) on `PATH`, and it has to be able to create a sandbox:
+
+```sh
+sudo apt install bubblewrap      # Debian, Ubuntu
+sudo dnf install bubblewrap      # Fedora
+sudo pacman -S bubblewrap        # Arch
+sudo zypper install bubblewrap   # openSUSE
+```
+
+Ubuntu 24.04 and newer also restrict unprivileged user namespaces through
+AppArmor (`kernel.apparmor_restrict_unprivileged_userns=1`), so an installed
+`bwrap` still fails with `setting up uid map: Permission denied`. Grant the
+permission to `bwrap` alone with an AppArmor profile:
+
+```sh
+sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
+Or relax the restriction system-wide, until the next reboot:
+
+```sh
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+```
+
+minibox probes `bwrap` once per session with a minimal sandbox. When the probe
+fails it reports `unavailable`, shows the reason and the fix, and blocks
+protected writes — it never reports `on` and then fails every command. `/dev/pts`
+is present inside `--dev`, so interactive shells and ptys keep working.
+
 ## What is confined
 
 | Surface | Mechanism | Outside the writable set |
@@ -50,7 +91,8 @@ macOS additionally allows the character devices a shell needs
 (`/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/tty`, `/dev/pts`,
 `/dev/fd`, `/dev/std*`, `/dev/shm`) and nothing else under `/dev`, so block
 devices like `/dev/disk*` are not writable. On Linux `--dev /dev` mounts a fresh
-minimal devtmpfs, so host block devices do not exist inside the sandbox at all.
+minimal devtmpfs, so host block devices do not exist inside the sandbox at all;
+it also mounts `devpts` at `/dev/pts`, so ptys and interactive shells work.
 
 `denyWrite` rules beat every one of these, including the project root.
 
@@ -140,7 +182,7 @@ through:
 | `inactive` | the default is off | run unconfined |
 | `enabled` | a backend resolved and the project root is usable | confined |
 | `disabled` | you ran `/minibox off` | run unconfined |
-| `unavailable` | no backend on this platform (e.g. Linux without `bwrap`) | **blocked** |
+| `unavailable` | no backend on this platform (Linux without `bwrap`, or a `bwrap` that cannot create a sandbox) | **blocked** |
 | `failed` | no session yet, or launched from `/` or your whole home directory | **blocked** |
 
 Launching from `/` or `$HOME` fails on purpose: confining writes to those would
@@ -148,7 +190,7 @@ protect nothing, so minibox refuses to pretend.
 
 ## Verification status
 
-**macOS: verified against the real kernel.** 138 unit tests plus real
+**macOS: verified against the real kernel.** 139 unit tests plus real
 `sandbox-exec` runs (allow/deny by filesystem effect, deny-beats-allow, single
 file whitelist, profile-directory protection, `/dev/null`, no `/dev/disk*`,
 a confined child process), and a live tmux session proving: no prompt inside the
@@ -157,25 +199,33 @@ path does not prompt, "No" and the 60s timeout block with the exact message the
 model sees, `/minibox off` and `on` take effect immediately, `default on|off`
 persists, and an approval survives `pi -c` while a new path still prompts.
 
-**Linux: TODO — not kernel-verified yet.** The argv builder is unit-tested, and
-`test/linux-bwrap.integration.test.ts` is a real kernel check that self-skips
-without `bwrap`. To close this out, run it on a Linux machine:
+**Linux: verified against the real kernel on Ubuntu 24.04 (bubblewrap 0.9.0,
+kernel 6.17).** The full suite is 148 tests, 9 of which are the real `bwrap`
+kernel checks in `test/linux-bwrap.integration.test.ts`: a write inside the
+project root succeeds, a write outside it and a denied `.env` are refused, the
+agent and configured cache directories are writable, reads and `/dev/null` still
+work, no host block device exists, and the generated profile directory is not
+writable. Both details that only a real run could settle are now settled:
+
+- `/dev/pts` **is** present under `--dev`: `/dev/pts/ptmx` exists and devpts is
+  mounted there, so no extra `--dev-bind /dev/pts /dev/pts` is needed.
+- Where unprivileged user namespaces are restricted (Ubuntu 24.04's AppArmor
+  default), the backend now probes `bwrap` and reports `unavailable` with the
+  fix, instead of reporting `on` and failing every command.
+
+To run it elsewhere:
 
 ```sh
 sudo apt install bubblewrap   # or: sudo dnf install bubblewrap
-npm test                      # the suite named "linux bubblewrap kernel enforcement" should run, not skip
+npm test                      # "linux bubblewrap kernel enforcement" runs; it fails, not skips, if bwrap cannot build a sandbox
 ```
-
-Two Linux details that only that run can settle: whether `/dev/pts` is present
-under `--dev` (if not, the fix is one `--dev-bind /dev/pts /dev/pts`), and
-whether unprivileged user namespaces are enabled on the host.
 
 ## Development
 
 ```sh
 npm install
 npm run typecheck
-npm test                       # unit tests + real macOS kernel tests
+npm test                       # unit tests + the real kernel tests for this platform (sandbox-exec, or bwrap on Linux)
 scripts/tui-check.sh           # manual: drives a real Pi session in tmux
 ```
 
@@ -183,4 +233,6 @@ Layout: `index.ts` wires the extension; `src/config.ts` owns `minibox.json`;
 `src/policy.ts` turns rules into writable/denied sets; `src/seatbelt.ts` and
 `src/bwrap.ts` generate the two backends; `src/state.ts` owns session state;
 `src/guard.ts` is the `write`/`edit` guard and the dialog; `src/shell.ts` wraps
-the bash child.
+the bash child. `src/bwrap.ts` also owns the one-shot probe that decides whether
+an installed `bwrap` can actually create a namespace, and the install/userns
+guidance.
