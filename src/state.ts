@@ -386,7 +386,7 @@ export class MiniboxController {
 
     #compile(): ReturnType<typeof compilePolicy> {
         const config = this.#config;
-        return compilePolicy({
+        const compiled = compilePolicy({
             platform: (this.#seams.platform ?? (() => process.platform))(),
             projectRoot: this.#projectRoot ?? "",
             home: this.#home(),
@@ -399,6 +399,35 @@ export class MiniboxController {
             seams: this.#pathSeams(),
             ...(this.#seams.tempDirs === undefined ? {} : { tempDirs: this.#seams.tempDirs }),
         });
+        const materializeProblems = this.#materializeWritableDirs(compiled.policy);
+        return materializeProblems.length === 0
+            ? compiled
+            : { ...compiled, problems: [...compiled.problems, ...materializeProblems] };
+    }
+
+    /**
+     * Create the directory-shaped writable entries that do not exist yet.
+     *
+     * A configured directory has to exist to be mounted read-write on Linux,
+     * and creating it keeps the two backends behaving identically: on macOS the
+     * rule would work anyway, so without this step `~/out/` would be writable on
+     * one platform and not on the other. Only entries explicitly shaped as a
+     * directory are created -- a bare entry is a single file, never a directory.
+     */
+    #materializeWritableDirs(policy: CompiledPolicy): string[] {
+        const problems: string[] = [];
+        for (const entry of policy.writable) {
+            if (entry.source !== "config" && entry.source !== "session") continue;
+            if (entry.form !== "dir") continue;
+            try {
+                mkdirSync(entry.path, { recursive: true });
+            } catch (error) {
+                problems.push(
+                    `could not create the directory "${entry.template ?? entry.path}" (${error instanceof Error ? error.message : String(error)}); writes there are not granted.`,
+                );
+            }
+        }
+        return problems;
     }
 
     #pathSeams(): PathSeams {

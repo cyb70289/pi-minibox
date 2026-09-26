@@ -25,17 +25,21 @@ export const MINIBOX_CONFIG_BASENAME = "minibox.json";
  * Development caches every package manager writes outside a project. They are
  * seeded so a first `npm install` is not a wall of denied writes, and they are
  * ordinary entries: deleting one is a supported thing to do.
+ *
+ * The trailing slash marks each one as a directory, which matters before the
+ * directory exists: a bare `~/.m2` would be granted as a single file, and maven
+ * would then be denied writing `~/.m2/repository` inside it.
  */
 export const DEFAULT_ALLOW_WRITE: readonly string[] = Object.freeze([
-    "~/.npm",
-    "~/.cache",
-    "~/.local",
-    "~/.bun",
-    "~/.cargo",
-    "~/.gradle",
-    "~/.m2",
-    "~/.rustup",
-    "~/.deno",
+    "~/.npm/",
+    "~/.cache/",
+    "~/.local/",
+    "~/.bun/",
+    "~/.cargo/",
+    "~/.gradle/",
+    "~/.m2/",
+    "~/.rustup/",
+    "~/.deno/",
 ]);
 
 /**

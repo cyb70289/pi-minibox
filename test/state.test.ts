@@ -281,3 +281,37 @@ describe("config files that do not exist yet", () => {
         writeFileSync(join(fixtureRoot, "scratch"), "x");
     });
 });
+
+describe("directory-shaped writable entries", () => {
+    it("creates a missing directory entry so both backends can grant it", () => {
+        const instance = controller();
+        const created = join(home, "build-output");
+        assert.equal(existsSync(created), false);
+
+        const status = session(instance, projectRoot, loaded({ allowWrite: ["~/build-output/"] }));
+
+        assert.equal(existsSync(created), true);
+        assert.ok(status.policy?.writable.some((entry) => entry.path === created && entry.form === "dir"));
+    });
+
+    it("does not create a missing entry that is shaped like a single file", () => {
+        const instance = controller();
+        const created = join(home, "single-file.conf");
+        assert.equal(existsSync(created), false);
+
+        const status = session(instance, projectRoot, loaded({ allowWrite: ["~/single-file.conf"] }));
+
+        assert.equal(existsSync(created), false);
+        assert.ok(status.policy?.writable.some((entry) => entry.path === created && entry.form === "file"));
+    });
+
+    it("reports a directory entry it cannot create instead of pretending it is granted", () => {
+        const blocker = join(fixtureRoot, "blocker-file");
+        writeFileSync(blocker, "not a directory");
+
+        const instance = controller();
+        const status = session(instance, projectRoot, loaded({ allowWrite: [`${blocker}/child/`] }));
+
+        assert.match(status.problems.join(" "), /could not create the directory/);
+    });
+});
