@@ -12,7 +12,7 @@
  * falls back to the safest interpretation and says so.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /** Format version of the config file. */
@@ -75,6 +75,8 @@ export type ConfigSeams = {
     exists?: (path: string) => boolean;
     /** Creates the directory that will hold the file. Defaults to `mkdir -p`. */
     ensureDir?: (path: string) => void;
+    /** Modification time in milliseconds, or undefined when the file is absent. */
+    mtime?: (path: string) => number | undefined;
 };
 
 /** A loaded config plus everything questionable found while loading it. */
@@ -199,6 +201,49 @@ export function loadMiniboxConfig(configPath: string, seams: ConfigSeams = {}): 
 
     const parsed = parseConfigObject(raw);
     return { config: parsed.config, problems: parsed.problems, notes: parsed.notes, seeded: false, malformed: false };
+}
+
+/** A cached loader, so a live edit to the file applies without re-reading it per operation. */
+export type MiniboxConfigCache = {
+    /** The current config, re-read when the file's modification time changed. */
+    load(): LoadedMiniboxConfig;
+    /** Forget the cached copy, so the next load re-reads. */
+    invalidate(): void;
+};
+
+function fileMtime(path: string, seams: ConfigSeams): number | undefined {
+    if (seams.mtime !== undefined) return seams.mtime(path);
+    try {
+        return statSync(path).mtimeMs;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Read the config through a modification-time cache.
+ *
+ * Protected operations ask for the config on every call, which has to stay
+ * cheap, and an edit to `minibox.json` has to take effect on the next one rather
+ * than on the next session.
+ */
+export function createMiniboxConfigCache(configPath: string, seams: ConfigSeams = {}): MiniboxConfigCache {
+    let cached: { mtimeMs: number | undefined; loaded: LoadedMiniboxConfig } | undefined;
+
+    return {
+        load(): LoadedMiniboxConfig {
+            const mtimeMs = fileMtime(configPath, seams);
+            if (cached !== undefined && cached.mtimeMs === mtimeMs) return cached.loaded;
+
+            const loaded = loadMiniboxConfig(configPath, seams);
+            // Re-read after the load, because seeding creates the file.
+            cached = { mtimeMs: fileMtime(configPath, seams), loaded };
+            return loaded;
+        },
+        invalidate(): void {
+            cached = undefined;
+        },
+    };
 }
 
 /**

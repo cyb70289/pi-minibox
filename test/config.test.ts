@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
 
 import {
+    createMiniboxConfigCache,
     DEFAULT_ALLOW_WRITE,
     DEFAULT_DENY_WRITE,
     loadMiniboxConfig,
@@ -136,6 +137,80 @@ describe("setMiniboxEnabled", () => {
 
         assert.throws(() => setMiniboxEnabled(configPath, false), MiniboxConfigWriteError);
         assert.equal(readFileSync(configPath, "utf-8"), "{ not json");
+    });
+});
+
+describe("createMiniboxConfigCache", () => {
+    function memoryConfig(initial: string) {
+        let contents = initial;
+        let mtimeMs = 1;
+        const seams = {
+            exists: () => contents !== "",
+            readFile: () => contents,
+            writeFile: (_path: string, next: string) => {
+                contents = next;
+                mtimeMs += 1;
+            },
+            ensureDir: () => {},
+            mtime: () => mtimeMs,
+        };
+        return {
+            seams,
+            replace(next: string) {
+                contents = next;
+            },
+            touch() {
+                mtimeMs += 1;
+            },
+            read: () => contents,
+        };
+    }
+
+    it("reuses the loaded config while the file is unchanged", () => {
+        const memory = memoryConfig(JSON.stringify({ version: 1, enabled: true, allowWrite: ["/a"] }));
+        const cache = createMiniboxConfigCache("/cfg/minibox.json", memory.seams);
+
+        assert.deepEqual(cache.load().config.allowWrite, ["/a"]);
+        memory.replace(JSON.stringify({ version: 1, enabled: true, allowWrite: ["/b"] }));
+        assert.deepEqual(cache.load().config.allowWrite, ["/a"], "an unchanged mtime keeps the cached copy");
+    });
+
+    it("re-reads after the file changes", () => {
+        const memory = memoryConfig(JSON.stringify({ version: 1, enabled: true, allowWrite: ["/a"] }));
+        const cache = createMiniboxConfigCache("/cfg/minibox.json", memory.seams);
+        cache.load();
+
+        memory.replace(JSON.stringify({ version: 1, enabled: false, allowWrite: ["/b"] }));
+        memory.touch();
+
+        const loaded = cache.load();
+        assert.deepEqual(loaded.config.allowWrite, ["/b"]);
+        assert.equal(loaded.config.enabled, false);
+    });
+
+    it("re-reads after an invalidate even when the mtime is unchanged", () => {
+        const memory = memoryConfig(JSON.stringify({ version: 1, enabled: true, allowWrite: ["/a"] }));
+        const cache = createMiniboxConfigCache("/cfg/minibox.json", memory.seams);
+        cache.load();
+
+        memory.replace(JSON.stringify({ version: 1, enabled: true, allowWrite: ["/b"] }));
+        cache.invalidate();
+
+        assert.deepEqual(cache.load().config.allowWrite, ["/b"]);
+    });
+
+    it("seeds a missing file and caches the seeded value", () => {
+        const seams = {
+            exists: () => false,
+            readFile: () => "",
+            writeFile: () => {},
+            ensureDir: () => {},
+            mtime: () => 1,
+        };
+        const cache = createMiniboxConfigCache("/cfg/minibox.json", seams);
+
+        assert.equal(cache.load().seeded, true);
+        assert.equal(cache.load().seeded, true);
     });
 });
 

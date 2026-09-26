@@ -1,0 +1,162 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, describe, it } from "node:test";
+
+import type { LoadedMiniboxConfig } from "../src/config.ts";
+import { policyLists, displayPath, footerText, formatStatusReport, sessionStartNotices } from "../src/status.ts";
+import { MiniboxController, type MiniboxStatus } from "../src/state.ts";
+
+const fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "minibox-status-")));
+const projectRoot = join(fixtureRoot, "proj");
+const home = join(fixtureRoot, "home");
+const agentDir = join(home, ".pi");
+const configPath = join(agentDir, "minibox.json");
+
+before(() => {
+    mkdirSync(join(projectRoot, "sub"), { recursive: true });
+    mkdirSync(agentDir, { recursive: true });
+});
+
+after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+
+const config: LoadedMiniboxConfig = {
+    config: { version: 1, enabled: true, allowWrite: [], denyWrite: [".env"] },
+    problems: [],
+    notes: [],
+    seeded: false,
+    malformed: false,
+};
+
+function statusOf(overrides: Partial<MiniboxStatus> = {}): MiniboxStatus {
+    return {
+        state: "inactive",
+        platform: "darwin",
+        backend: "macos-seatbelt",
+        executable: "/usr/bin/sandbox-exec",
+        projectRoot,
+        agentDir,
+        configPath,
+        enabledByDefault: true,
+        sessionOverride: undefined,
+        config: config.config,
+        problems: [],
+        notes: [],
+        policy: undefined,
+        reason: "test",
+        ...overrides,
+    };
+}
+
+function enabledController() {
+    const controller = new MiniboxController({
+        platform: () => "darwin",
+        isExecutable: () => true,
+        home: () => home,
+        tempDirs: [],
+        createProfileDir: () => {
+            mkdirSync(join(fixtureRoot, "profiles"), { recursive: true });
+            return join(fixtureRoot, "profiles");
+        },
+    });
+    controller.applyConfig(configPath, config);
+    controller.beginSession({ cwd: projectRoot, agentDir, configPath });
+    return controller;
+}
+
+describe("footerText", () => {
+    it("says minibox is on only while it is enforcing", () => {
+        assert.equal(footerText(statusOf({ state: "enabled" })), "minibox on");
+    });
+
+    it("stays silent for every other state", () => {
+        for (const state of ["inactive", "disabled", "unavailable", "failed"] as const) {
+            assert.equal(footerText(statusOf({ state })), undefined, state);
+        }
+    });
+});
+
+describe("displayPath", () => {
+    it("shortens paths under home", () => {
+        assert.equal(displayPath(join(home, ".pi"), home), "~/.pi");
+        assert.equal(displayPath(home, home), "~");
+    });
+
+    it("leaves other paths alone", () => {
+        assert.equal(displayPath("/etc/hosts", home), "/etc/hosts");
+    });
+});
+
+describe("formatStatusReport", () => {
+    it("reports the state, the backend, the project, and the rules", () => {
+        const controller = enabledController();
+        const report = formatStatusReport(controller.status());
+
+        assert.match(report, /^minibox: enabled$/m);
+        assert.match(report, /^backend: macos-seatbelt \(\/usr\/bin\/sandbox-exec\)$/m);
+        assert.match(report, /^project: /m);
+        assert.match(report, /^config: .*minibox\.json \(enabled: true\)$/m);
+        assert.match(report, /^writable:$/m);
+        assert.match(report, /\[project\]/);
+        assert.match(report, /\[baseline\]/);
+        assert.match(report, /^denied:$/m);
+        assert.match(report, /\[builtin\]/);
+        assert.match(report, /\[internal\]/);
+    });
+
+    it("explains why a non-enforcing state is what it is", () => {
+        const report = formatStatusReport(
+            statusOf({ state: "unavailable", backend: undefined, executable: undefined, reason: "no bwrap here" }),
+        );
+
+        assert.match(report, /^minibox: unavailable$/m);
+        assert.match(report, /no bwrap here/);
+        assert.equal(report.includes("writable:"), false);
+    });
+
+    it("lists problems and notes", () => {
+        const report = formatStatusReport(
+            statusOf({ problems: ["a dropped rule"], notes: ["an unknown key"] }),
+        );
+
+        assert.match(report, /problems:\n {2}a dropped rule/);
+        assert.match(report, /notes:\n {2}an unknown key/);
+    });
+});
+
+describe("sessionStartNotices", () => {
+    it("reports config problems as warnings", () => {
+        const notices = sessionStartNotices(statusOf({ problems: ["bad json"] }));
+
+        assert.deepEqual(notices, [{ message: "minibox: bad json", level: "warning" }]);
+    });
+
+    it("explains a state that will block writes", () => {
+        const notices = sessionStartNotices(statusOf({ state: "failed", reason: "too broad" }));
+
+        assert.equal(notices.length, 1);
+        assert.equal(notices[0]?.level, "error");
+        assert.match(notices[0]?.message ?? "", /will block writes it cannot confine/);
+    });
+
+    it("stays quiet while enforcing, and while simply switched off", () => {
+        assert.deepEqual(sessionStartNotices(statusOf({ state: "enabled" })), []);
+        assert.deepEqual(sessionStartNotices(statusOf({ state: "inactive" })), []);
+    });
+});
+
+describe("policyLists", () => {
+    it("separates directory and file rules", () => {
+        const controller = enabledController();
+        const policy = controller.status().policy;
+        assert.ok(policy);
+
+        const lists = policyLists(policy);
+
+        assert.ok(lists.writableDirs.includes(projectRoot));
+        assert.deepEqual(lists.writableFiles, []);
+        assert.deepEqual(lists.denyDirs, []);
+        assert.deepEqual(lists.denyFiles, [join(projectRoot, ".env"), configPath].sort());
+    });
+});
