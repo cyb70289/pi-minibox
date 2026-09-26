@@ -1,0 +1,38 @@
+{
+  "name": "pi-minibox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension: a minimal kernel-enforced write sandbox (macOS Seatbelt, Linux bubblewrap) with a write whitelist and per-session write confirmation.",
+  "type": "module",
+  "main": "index.ts",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "sandbox",
+    "seatbelt",
+    "bubblewrap"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "verify": "npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
