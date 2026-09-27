@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import type { LoadedMiniboxConfig } from "../src/config.ts";
-import { policyLists, displayPath, footerText, formatStatusReport, sessionStartNotices } from "../src/status.ts";
+import { policyLists, displayPath, enforcementFailureNotice, formatStatusReport, sessionStartNotices } from "../src/status.ts";
 import { MiniboxController, type MiniboxStatus } from "../src/state.ts";
 
 const fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "minibox-status-")));
@@ -65,18 +65,6 @@ function enabledController() {
     return controller;
 }
 
-describe("footerText", () => {
-    it("says minibox is on only while it is enforcing", () => {
-        assert.equal(footerText(statusOf({ state: "enabled" })), "minibox on");
-    });
-
-    it("stays silent for every other state", () => {
-        for (const state of ["inactive", "disabled", "unavailable", "failed"] as const) {
-            assert.equal(footerText(statusOf({ state })), undefined, state);
-        }
-    });
-});
-
 describe("displayPath", () => {
     it("shortens paths under home", () => {
         assert.equal(displayPath(join(home, ".pi"), home), "~/.pi");
@@ -126,23 +114,38 @@ describe("formatStatusReport", () => {
 });
 
 describe("sessionStartNotices", () => {
-    it("reports config problems as warnings", () => {
-        const notices = sessionStartNotices(statusOf({ problems: ["bad json"] }));
-
-        assert.deepEqual(notices, [{ message: "minibox: bad json", level: "warning" }]);
+    it("shows on once when minibox is enforcing", () => {
+        assert.deepEqual(sessionStartNotices(statusOf({ state: "enabled" })), [
+            { message: "minibox on", level: "info" },
+        ]);
     });
 
-    it("explains a state that will block writes", () => {
-        const notices = sessionStartNotices(statusOf({ state: "failed", reason: "too broad" }));
-
-        assert.equal(notices.length, 1);
-        assert.equal(notices[0]?.level, "error");
-        assert.match(notices[0]?.message ?? "", /will block writes it cannot confine/);
+    it("says nothing while minibox is off, including config diagnostics", () => {
+        for (const state of ["inactive", "disabled"] as const) {
+            assert.deepEqual(sessionStartNotices(statusOf({ state, problems: ["bad json"], notes: ["note"] })), []);
+        }
     });
 
-    it("stays quiet while enforcing, and while simply switched off", () => {
-        assert.deepEqual(sessionStartNotices(statusOf({ state: "enabled" })), []);
-        assert.deepEqual(sessionStartNotices(statusOf({ state: "inactive" })), []);
+    it("reports config problems after the enabled startup status", () => {
+        const notices = sessionStartNotices(statusOf({ state: "enabled", problems: ["bad json"] }));
+
+        assert.deepEqual(notices, [
+            { message: "minibox on", level: "info" },
+            { message: "minibox: bad json", level: "warning" },
+        ]);
+    });
+
+    it("shows an error instead of on when enabled protection failed", () => {
+        for (const state of ["unavailable", "failed"] as const) {
+            const notices = sessionStartNotices(statusOf({ state, reason: "cannot start backend" }));
+
+            assert.equal(notices.length, 1);
+            assert.equal(notices[0]?.level, "error");
+            assert.match(notices[0]?.message ?? "", /will block writes it cannot confine/);
+            assert.equal(notices[0]?.message.includes("minibox on"), false);
+            assert.deepEqual(enforcementFailureNotice(statusOf({ state, reason: "cannot start backend" })), notices[0]);
+        }
+        assert.equal(enforcementFailureNotice(statusOf({ state: "enabled" })), undefined);
     });
 });
 

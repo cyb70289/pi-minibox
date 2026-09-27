@@ -52,7 +52,7 @@ export type BackendSupport =
  */
 export type MiniboxState = "inactive" | "enabled" | "disabled" | "unavailable" | "failed";
 
-/** Everything the status view, the footer, and the guard need to know. */
+/** Everything the status view, startup notice, and guard need to know. */
 export type MiniboxStatus = {
     readonly state: MiniboxState;
     readonly platform: string;

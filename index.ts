@@ -31,7 +31,7 @@ import {
 } from "./src/config.ts";
 import { APPROVAL_ENTRY_TYPE, createWriteGuard, readSessionApprovals } from "./src/guard.ts";
 import { createMiniboxBashOperations } from "./src/shell.ts";
-import { FOOTER_KEY, footerText, formatStatusReport, sessionStartNotices } from "./src/status.ts";
+import { enforcementFailureNotice, formatStatusReport, sessionStartNotices } from "./src/status.ts";
 import { MiniboxController } from "./src/state.ts";
 
 const COMMAND_NAME = "minibox";
@@ -45,16 +45,11 @@ export default function piMinibox(pi: ExtensionAPI): void {
     // Pi's shell setting is only readable once a session directory is known, so
     // it is resolved lazily and re-read on every session start.
     let shellPath: string | undefined;
-    let paintFooter: ((status: ReturnType<MiniboxController["status"]>) => void) | undefined;
 
-    /** Re-read the config file when it changed, and repaint what depends on it. */
+    /** Re-read the config file when it changed. */
     const refreshConfig = (): void => {
-        if (!controller.reload(configPath, (path) => configCache.load())) return;
+        controller.reload(configPath, () => configCache.load());
     };
-
-    controller.onReload(() => {
-        paintFooter?.(controller.status());
-    });
 
     const innerBash = createMiniboxBashOperations(controller, { shellPath: () => shellPath });
 
@@ -108,17 +103,17 @@ export default function piMinibox(pi: ExtensionAPI): void {
             controller.addSessionGrant(path);
         }
 
-        paintFooter = (status) => ctx.ui.setStatus(FOOTER_KEY, footerText(status));
-        const status = controller.status();
-        paintFooter(status);
-
-        for (const notice of sessionStartNotices(status)) {
-            ctx.ui.notify(notice.message, notice.level);
+        for (const notice of sessionStartNotices(controller.status())) {
+            // Pi renders info notices dim; override that only for the TUI's
+            // positive startup status. RPC clients receive plain text.
+            const message = ctx.mode === "tui" && notice.message === "minibox on"
+                ? ctx.ui.theme.bold(ctx.ui.theme.fg("success", notice.message))
+                : notice.message;
+            ctx.ui.notify(message, notice.level);
         }
     });
 
-    pi.on("session_shutdown", (_event, ctx) => {
-        ctx.ui.setStatus(FOOTER_KEY, undefined);
+    pi.on("session_shutdown", () => {
         controller.dispose();
     });
 
@@ -149,7 +144,11 @@ export default function piMinibox(pi: ExtensionAPI): void {
         const enabled = value === "on";
         if (!persisted) {
             const status = enabled ? controller.enable() : controller.disable();
-            paintFooter?.(status);
+            const failure = enforcementFailureNotice(status);
+            if (failure) {
+                ctx.ui.notify(failure.message, failure.level);
+                return;
+            }
             ctx.ui.notify(
                 enabled
                     ? "minibox is on for this session. Protected writes are confined."
@@ -163,7 +162,11 @@ export default function piMinibox(pi: ExtensionAPI): void {
             const config = setMiniboxEnabled(configPath, enabled);
             configCache.invalidate();
             const status = controller.applyDefault(config);
-            paintFooter?.(status);
+            const failure = enforcementFailureNotice(status);
+            if (failure) {
+                ctx.ui.notify(`minibox default is now on (${configPath}), but ${failure.message}`, failure.level);
+                return;
+            }
             ctx.ui.notify(
                 `minibox default is now ${enabled ? "on" : "off"} (${configPath}).`,
                 enabled ? "info" : "warning",
@@ -202,7 +205,7 @@ export {
 } from "./src/bwrap.ts";
 export { buildSeatbeltCommand, buildSeatbeltProfile } from "./src/seatbelt.ts";
 export { createMiniboxBashOperations, quoteForPosixShell } from "./src/shell.ts";
-export { footerText, formatStatusReport, FOOTER_KEY } from "./src/status.ts";
+export { formatStatusReport } from "./src/status.ts";
 export {
     describeBackendSupport,
     executableFromPath,

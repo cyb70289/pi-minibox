@@ -141,9 +141,12 @@ force, and the problem is reported — a typo never widens access.
 /minibox default off      stop now and persist it
 ```
 
-The footer shows `minibox on` while minibox is enforcing, and nothing otherwise.
-`/minibox` is always the full answer. No model-callable tool can switch minibox
-off or add a rule: the model can only ask, through `write`/`edit`.
+At session startup, Pi highlights `minibox on` in green when protection is
+working, shows an error if it was enabled but could not start, and stays silent
+when it is off. This is a one-time notification, not a persistent footer.
+State-changing `/minibox` commands also show their result; `/minibox` is always
+the full answer. No model-callable tool can switch minibox off or add a rule: the
+model can only ask, through `write`/`edit`.
 
 ## The confirmation box
 

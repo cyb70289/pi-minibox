@@ -1,10 +1,6 @@
 /**
- * Operator-facing status: the footer, the `/minibox` report, and the handful of
- * notices a session start should surface.
- *
- * The footer is deliberately one word: it appears on every screen and only has
- * to answer "am I confined?". Everything else belongs in the report, where there
- * is room to show what is writable and why.
+ * Operator-facing status: the `/minibox` report and the notices shown once when
+ * a session starts.
  */
 
 import { homedir } from "node:os";
@@ -12,14 +8,6 @@ import { homedir } from "node:os";
 import { pathKind, type PathKind } from "./paths.ts";
 import { denyDirs, denyFiles, writableDirs, writableFiles, type CompiledPolicy, type WriteEntry } from "./policy.ts";
 import type { MiniboxStatus } from "./state.ts";
-
-/** Footer slot key, so another extension can never collide with it. */
-export const FOOTER_KEY = "minibox";
-
-/** The footer label while minibox is enforcing, and nothing otherwise. */
-export function footerText(status: MiniboxStatus): string | undefined {
-    return status.state === "enabled" ? "minibox on" : undefined;
-}
 
 /** A notice a session start should show, if any. */
 export type MiniboxNotice = {
@@ -34,16 +22,22 @@ export function displayPath(path: string, home = homedir()): string {
     return path;
 }
 
-/** The notices worth interrupting a session start with. */
+/** Explain why an enabled minibox cannot actually confine writes. */
+export function enforcementFailureNotice(status: MiniboxStatus): MiniboxNotice | undefined {
+    if (status.state !== "unavailable" && status.state !== "failed") return undefined;
+    return { message: `minibox is ${status.state} and will block writes it cannot confine. ${status.reason}`, level: "error" };
+}
+
+/** The status and diagnostics worth showing once when a session starts. */
 export function sessionStartNotices(status: MiniboxStatus): MiniboxNotice[] {
-    const notices: MiniboxNotice[] = [];
+    if (status.state === "inactive" || status.state === "disabled") return [];
+
+    const notices: MiniboxNotice[] = [
+        enforcementFailureNotice(status) ?? { message: "minibox on", level: "info" },
+    ];
 
     for (const problem of status.problems) notices.push({ message: `minibox: ${problem}`, level: "warning" });
     for (const note of status.notes) notices.push({ message: `minibox: ${note}`, level: "info" });
-
-    if (status.state === "unavailable" || status.state === "failed") {
-        notices.push({ message: `minibox is ${status.state} and will block writes it cannot confine. ${status.reason}`, level: "error" });
-    }
 
     return notices;
 }

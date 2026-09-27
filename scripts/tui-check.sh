@@ -43,7 +43,7 @@ start() {
     : >"$PANE_LOG"
     tmux new-session -d -s "$SESSION" -x 220 -y 50 "cd '$CWD' && pi -ne -e '$EXT'"
     wait_for "minibox on" 90 || wait_for "$" 30
-    log "session started in $CWD (footer should read: minibox on)"
+    log "session started in $CWD (startup notice should read: minibox on)"
 }
 
 stop() {
