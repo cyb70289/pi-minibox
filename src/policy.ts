@@ -115,6 +115,20 @@ export type CompiledPolicyResult = {
 
 const PATTERN_CHARACTERS = /[*?[\]{}]/;
 
+/** The note emitted for an `allowWrite` entry that is not on disk yet. */
+export function inactiveEntryNote(template: string): string {
+    return `"${template}" does not exist yet; it is not writable until it is created.`;
+}
+
+/**
+ * Whether a note only reports an `allowWrite` entry that does not exist yet.
+ * `/minibox` lists these; session start deliberately does not, because a
+ * seeded config names caches most machines have not created.
+ */
+export function isInactiveEntryNote(note: string): boolean {
+    return note.endsWith("does not exist yet; it is not writable until it is created.");
+}
+
 /** Directory-form marker: a trailing `/**` is the same rule as the directory itself. */
 function stripSubtreeMarker(template: string): { template: string; explicitDir: boolean } {
     for (const marker of [`${sep}**`, "/**", "/", sep]) {
@@ -273,7 +287,7 @@ export function compilePolicy(input: CompilePolicyInput): CompiledPolicyResult {
         // creating that path, and minibox never writes on the operator's
         // behalf. The entry stays inactive until it is created, and says so.
         if (pathKind(result.entry.path) === "missing") {
-            notes.push(`"${template}" does not exist yet; it is not writable until it is created.`);
+            notes.push(inactiveEntryNote(template));
             return;
         }
         writable.push(result.entry);

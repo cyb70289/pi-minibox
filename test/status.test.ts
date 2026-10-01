@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import type { LoadedMiniboxConfig } from "../src/config.ts";
+import { inactiveEntryNote } from "../src/policy.ts";
 import { policyLists, displayPath, enforcementFailureNotice, formatStatusReport, sessionStartNotices } from "../src/status.ts";
 import { MiniboxController, type MiniboxStatus } from "../src/state.ts";
 
@@ -132,6 +133,18 @@ describe("sessionStartNotices", () => {
         assert.deepEqual(notices, [
             { message: "minibox on", level: "info" },
             { message: "minibox: bad json", level: "warning" },
+        ]);
+    });
+
+    it("stays quiet about allow entries that do not exist yet, but keeps other notes", () => {
+        const unknownKey = 'minibox.json has an unknown key "x"; it is ignored.';
+        const notices = sessionStartNotices(
+            statusOf({ state: "enabled", notes: [inactiveEntryNote("~/.bun/"), unknownKey] }),
+        );
+
+        assert.deepEqual(notices, [
+            { message: "minibox on", level: "info" },
+            { message: `minibox: ${unknownKey}`, level: "info" },
         ]);
     });
 

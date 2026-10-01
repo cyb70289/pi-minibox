@@ -6,7 +6,15 @@
 import { homedir } from "node:os";
 
 import { pathKind, type PathKind } from "./paths.ts";
-import { denyDirs, denyFiles, writableDirs, writableFiles, type CompiledPolicy, type WriteEntry } from "./policy.ts";
+import {
+    denyDirs,
+    denyFiles,
+    isInactiveEntryNote,
+    writableDirs,
+    writableFiles,
+    type CompiledPolicy,
+    type WriteEntry,
+} from "./policy.ts";
 import type { MiniboxStatus } from "./state.ts";
 
 /** A notice a session start should show, if any. */
@@ -37,7 +45,13 @@ export function sessionStartNotices(status: MiniboxStatus): MiniboxNotice[] {
     ];
 
     for (const problem of status.problems) notices.push({ message: `minibox: ${problem}`, level: "warning" });
-    for (const note of status.notes) notices.push({ message: `minibox: ${note}`, level: "info" });
+    // An `allowWrite` entry that is not on disk yet is a quiet no-op, not launch
+    // news: a seeded config lists caches most machines have not created. It stays
+    // in `/minibox`, where the operator asked for the full picture.
+    for (const note of status.notes) {
+        if (isInactiveEntryNote(note)) continue;
+        notices.push({ message: `minibox: ${note}`, level: "info" });
+    }
 
     return notices;
 }
