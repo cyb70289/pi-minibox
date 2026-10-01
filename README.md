@@ -3,7 +3,8 @@
 A minimal **write-only** sandbox for Pi's foreground tools: macOS Seatbelt
 (`sandbox-exec`) and Linux bubblewrap (`bwrap`). Reads and network are never
 restricted. Writes are allowed under the project you launched from, `~/.pi`,
-temp, `/dev` character devices, and whatever you list in `minibox.json` —
+temp, essential `/dev` character devices, Linux `/proc` and `/sys`, and whatever
+you list in `minibox.json` —
 everything else is refused by the kernel, or asks you first.
 
 There is no launcher. Pi keeps being started normally.
@@ -85,14 +86,26 @@ Always writable, whether or not you configure anything:
 | the project root you launched Pi from | your work lives here |
 | `~/.pi` | Pi's own agent directory |
 | `/private/var/folders`, `/private/tmp` (macOS) · `/tmp`, `/var/tmp` (Linux) | `mktemp`, compilers, package managers |
+| `/proc`, `/sys` (Linux) | writable kernel filesystems; CUDA initialization needs to rename threads under `/proc/self/task/` |
 | `~/.pi/agent/minibox.json` — **the one exception** | hard-denied, so nothing sandboxed can grant itself more |
 
 macOS additionally allows the character devices a shell needs
 (`/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/tty`, `/dev/pts`,
 `/dev/fd`, `/dev/std*`, `/dev/shm`) and nothing else under `/dev`, so block
 devices like `/dev/disk*` are not writable. On Linux `--dev /dev` mounts a fresh
-minimal devtmpfs, so host block devices do not exist inside the sandbox at all;
+minimal device tree, so host block devices do not exist inside the sandbox at all;
 it also mounts `devpts` at `/dev/pts`, so ptys and interactive shells work.
+Linux restores only the character devices matched by `allowDevices`
+with individual device binds. `allowWrite` paths under `/dev` are refused on
+Linux; no whole host `/dev` subtree, symlinks, or block devices are exposed.
+Host device permissions still apply (e.g. access to a DRM render node may
+require membership in the `render` group). With no configured
+devices, the sandbox retains its minimal `/dev`.
+Linux binds `/proc` and `/sys` read-write even on machines without a GPU. This
+is an explicit exception to the filesystem write boundary: commands may change
+kernel state or other accessible process state through these filesystems. Merely
+allowing the NVIDIA devices is insufficient for CUDA, which writes its helper
+thread's `/proc/self/task/<tid>/comm` during initialization.
 
 Two internal paths are always denied, on both backends: `minibox.json` itself,
 and the directory generated profiles are written to. Both target paths that
@@ -113,7 +126,8 @@ Created on first run at `~/.pi/agent/minibox.json` (i.e. `$PI_CODING_AGENT_DIR`)
   "version": 1,
   "enabled": true,
   "allowWrite": ["~/.npm/", "~/.cache/", "~/.local/", "~/.bun/", "~/.cargo/",
-                 "~/.gradle/", "~/.m2/", "~/.rustup/", "~/.deno/"]
+                 "~/.gradle/", "~/.m2/", "~/.rustup/", "~/.deno/"],
+  "allowDevices": ["/dev/nvidia*", "/dev/dri/*"]
 }
 ```
 
@@ -122,8 +136,8 @@ Entry rules:
 - `~` means your home directory, an absolute path is taken as written, and
   anything else is **relative to whichever project the session is in**. One
   global file therefore behaves per-project.
-- Rules are **concrete paths**. `*.log` and `src/**/x` are rejected with a clear
-  error rather than silently matching nothing on macOS and silently matching too
+- `allowWrite` rules are **concrete paths**. `*.log` and `src/**/x` are rejected
+  with a clear error rather than silently matching nothing on macOS and silently matching too
   much on Linux (bubblewrap can only mount a real directory, so a pattern there
   would have to grant its whole static prefix).
 - A **directory** rule covers its whole subtree. A trailing `/` marks a
@@ -133,6 +147,16 @@ Entry rules:
   until you create `~/scratch` yourself. This is deliberate — no minibox code
   path writes to the host.
 - Paths are canonicalized, so a symlink cannot widen a rule.
+- `allowDevices` (Linux only) accepts absolute `/dev` character-device paths
+  and patterns with a single trailing `*` in the filename. The seeded patterns
+  `/dev/nvidia*` and `/dev/dri/*` scan those directories at launch and mount
+  only matching character devices. They do **not** mount directories or follow
+  symlinks; `/dev/nvidia-caps/*` can be added if a workload needs capability
+  nodes. Other glob syntax, including `**`, is rejected. Missing devices and
+  non-matching patterns grant nothing. An explicit empty list disables host
+  device mounts. `allowWrite` paths under `/dev` are refused on Linux: ordinary
+  `--bind` mounts do not make device nodes usable inside bubblewrap, and binding
+  a host device directory would expose too much.
 - The file is re-read when it changes, so an edit applies to the next write.
 
 If the file cannot be parsed, its rules are dropped, the built-in rules stay in
@@ -218,8 +242,10 @@ succeeds, a write outside it is refused, a protected command leaves the project
 byte-identical (no `.env`, `.env.local`, or `.git` springing into existence),
 `minibox.json` is not writable, the agent and configured cache directories are
 writable, reads and `/dev/null` still work, no host block device exists, and the
-generated profile directory is not writable. Two details that only a real run
-could settle are now settled:
+generated profile directory is not writable. On NVIDIA hosts with a working
+`nvidia-smi`, the suite checks `nvidia-smi -L` using configured GPU devices;
+where CUDA and Python are installed, it checks CUDA initialization and device
+count. Two details that only a real run could settle are now settled:
 
 - `/dev/pts` **is** present under `--dev`: `/dev/pts/ptmx` exists and devpts is
   mounted there, so no extra `--dev-bind /dev/pts /dev/pts` is needed.

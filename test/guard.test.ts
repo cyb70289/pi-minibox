@@ -34,7 +34,7 @@ before(() => {
 after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
 const config: LoadedMiniboxConfig = {
-    config: { version: 1, enabled: true, allowWrite: [] },
+    config: { version: 1, enabled: true, allowWrite: [], allowDevices: [] },
     problems: [],
     notes: [],
     seeded: false,

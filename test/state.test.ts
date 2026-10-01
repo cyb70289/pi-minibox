@@ -24,7 +24,7 @@ after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
 function loaded(overrides: Partial<LoadedMiniboxConfig["config"]> = {}): LoadedMiniboxConfig {
     return {
-        config: { version: 1, enabled: true, allowWrite: [], ...overrides },
+        config: { version: 1, enabled: true, allowWrite: [], allowDevices: [], ...overrides },
         problems: [],
         notes: [],
         seeded: false,
@@ -228,6 +228,27 @@ describe("MiniboxController", () => {
         assert.ok((status.policy?.denied ?? []).some((entry) => entry.path === configPath));
     });
 
+    it("applies configured Linux devices to the next launch and status report", () => {
+        const instance = controller({
+            platform: () => "linux",
+            lookupExecutable: () => "/usr/bin/bwrap",
+            probeBwrap: () => ({ ok: true }),
+        });
+        session(instance, projectRoot, loaded({ allowDevices: ["/dev/null"] }));
+        const first = instance.requireLaunchPlan();
+        assert.equal(first.confined, true);
+        if (!first.confined) return;
+        assert.deepEqual(first.policy.devices, ["/dev/null"]);
+        assert.deepEqual(instance.status().policy?.devices, ["/dev/null"]);
+
+        instance.applyConfig(configPath, loaded({ allowDevices: [] }));
+        const next = instance.requireLaunchPlan();
+        assert.equal(next.confined, true);
+        if (!next.confined) return;
+        assert.deepEqual(next.policy.devices, []);
+        assert.notEqual(first.profilePath, next.profilePath);
+    });
+
     it("includes session grants in the compiled policy and in the profile identity", () => {
         const instance = controller();
         session(instance);
@@ -326,7 +347,7 @@ describe("MiniboxController", () => {
         session(instance, projectRoot, loaded({ enabled: false }));
         instance.enable();
 
-        const status = instance.applyDefault({ version: 1, enabled: false, allowWrite: [] });
+        const status = instance.applyDefault({ version: 1, enabled: false, allowWrite: [], allowDevices: [] });
 
         assert.equal(status.state, "inactive");
         assert.equal(status.enabledByDefault, false);

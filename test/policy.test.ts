@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -75,6 +75,14 @@ describe("compilePolicy baselines", () => {
         }
     });
 
+    it("hardcodes writable procfs and sysfs on Linux even when temp baselines are overridden", () => {
+        const { policy } = compile({ platform: "linux" });
+        for (const path of ["/proc", "/sys"]) {
+            assert.ok(policy.writable.some((entry) => entry.path === path && entry.form === "dir" && entry.source === "baseline"));
+            assert.equal(evaluateWriteAccess(`${path}/some-file`, policy).allowed, true);
+        }
+    });
+
     it("allows the macOS character devices and no devices elsewhere", () => {
         assert.deepEqual(compile().policy.devices, [...MACOS_DEVICE_ALLOWLIST]);
         assert.deepEqual(compile({ platform: "linux" }).policy.devices, []);
@@ -87,6 +95,76 @@ describe("compilePolicy baselines", () => {
             policy.denied.map((entry) => [entry.path, entry.source]),
             [[configPath, "builtin"]],
         );
+    });
+});
+
+describe("allowDevices", () => {
+    it("binds only explicit, existing character devices on Linux", () => {
+        const { policy, problems } = compile({
+            platform: "linux",
+            allowDevices: ["/dev/zero", "/dev/null", "/dev/null"],
+        });
+        assert.deepEqual(problems, []);
+        assert.deepEqual(policy.devices, ["/dev/null", "/dev/zero"]);
+        assert.equal(evaluateWriteAccess("/dev/null", policy).allowed, true);
+        assert.equal(evaluateWriteAccess("/dev/random", policy).allowed, false);
+    });
+
+    it("expands a trailing wildcard to matching character devices only", () => {
+        const { policy, problems } = compile({
+            platform: "linux",
+            allowDevices: ["/dev/nul*", "/dev/ze*", "/dev/std*", "/dev/dri/*"],
+        });
+        assert.deepEqual(problems, []);
+        assert.ok(policy.devices.includes("/dev/null"));
+        assert.ok(policy.devices.includes("/dev/zero"));
+        assert.equal(policy.devices.some((path) => path.startsWith("/dev/std")), false, "symlinks must not be bound");
+        assert.equal(policy.devices.some((path) => path === "/dev/dri"), false, "directories must not be bound");
+    });
+
+    it("rejects unsupported patterns, non-dev paths, directories and symlinks; missing nodes are inactive", () => {
+        const { policy, problems, notes } = compile({
+            platform: "linux",
+            allowDevices: ["dev/null", "/etc/hosts", "/dev/", "/dev/*", "/dev/fd", "/dev/minibox-no-such-device", "/dev/nvi*dia"],
+        });
+        assert.deepEqual(policy.devices, []);
+        assert.equal(problems.length, 6, problems.join("; "));
+        assert.ok(problems.some((problem) => /symlink/.test(problem)));
+        assert.ok(notes.some((note) => /minibox-no-such-device.*not available/.test(note)));
+    });
+
+    it("rejects regular files and device aliases even when their target is a character device", {
+        skip: !existsSync("/dev/shm") || process.platform !== "linux",
+    }, () => {
+        const devFixture = mkdtempSync("/dev/shm/minibox-policy-device-");
+        try {
+            const regular = join(devFixture, "regular");
+            const alias = join(devFixture, "alias");
+            writeFileSync(regular, "not a device");
+            symlinkSync("/dev/null", alias);
+            const { policy, problems } = compile({ platform: "linux", allowDevices: [regular, alias, `${devFixture}/*`] });
+            assert.deepEqual(policy.devices, []);
+            assert.ok(problems.some((problem) => /not a character device/.test(problem)));
+            assert.ok(problems.some((problem) => /symlink/.test(problem)));
+        } finally {
+            rmSync(devFixture, { recursive: true, force: true });
+        }
+    });
+
+    it("refuses Linux allowWrite rules under /dev so only allowDevices can bind host devices", () => {
+        const { policy, problems } = compile({
+            platform: "linux",
+            allowWrite: ["/dev", "/dev/null", "/dev/dri/"],
+        });
+        assert.equal(problems.length, 3);
+        assert.ok(problems.every((problem) => /use allowDevices/.test(problem)));
+        assert.equal(policy.writable.some((entry) => entry.path === "/dev" || entry.path.startsWith("/dev/")), false);
+    });
+
+    it("ignores Linux device defaults on macOS without a startup notice", () => {
+        const { policy, notes } = compile({ allowDevices: ["/dev/nvidia*", "/dev/dri/*"] });
+        assert.deepEqual(policy.devices, [...MACOS_DEVICE_ALLOWLIST]);
+        assert.deepEqual(notes, []);
     });
 });
 

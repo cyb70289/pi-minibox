@@ -5,10 +5,12 @@
  * than as a rule list:
  *
  *   --ro-bind / /            every path stays readable, nothing is writable
- *   --dev /dev               a fresh, minimal devtmpfs replaces the host device
- *                            tree, so host block devices do not exist inside at
+ *   --dev /dev               a fresh, minimal device tree replaces the host one,
+ *                            so host block devices do not exist inside at
  *                            all -- no `/dev/nvme*` enumeration required
- *   --bind <root> <root>     one read-write bind per writable root
+ *   --dev-bind <device> ... only configured character devices from the host
+ *   --bind <root> <root>     one read-write bind per writable root, including
+ *                            Linux /proc and /sys (CUDA needs thread comm writes)
  *   --ro-bind <deny> <deny>  denies are mounted last, so they win
  *   -- <shell> -c <command>
  *
@@ -52,7 +54,8 @@ export type BwrapProbe = { readonly ok: true } | { readonly ok: false; readonly 
 /**
  * The smallest sandbox that proves bubblewrap can create a mount and user
  * namespace here: the same read-only root and fresh device tree the real launch
- * uses, running a no-op shell.
+ * starts with, running a no-op shell. The full launch additionally restores
+ * writable procfs/sysfs and configured character devices.
  */
 export const BWRAP_PROBE_ARGS: readonly string[] = [
     "--ro-bind",
@@ -101,6 +104,12 @@ export function buildBwrapArgs(
     execArgs: readonly string[],
 ): BwrapPlan {
     const args: string[] = ["--ro-bind", "/", "/", "--dev", "/dev"];
+
+    for (const path of policy.devices) {
+        // A hot-unplug after policy compilation must not break the shell.
+        // bwrap creates the destination in its private /dev, not on the host.
+        args.push("--dev-bind-try", path, path);
+    }
 
     for (const path of writableDirs(policy)) {
         // A missing writable root cannot be bound. `--bind-try` skips it, which

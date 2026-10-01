@@ -24,10 +24,12 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import { BWRAP_INSTALL_HINT, BWRAP_USERNS_HINT, buildBwrapArgs, probeBwrap } from "../src/bwrap.ts";
+import { DEFAULT_ALLOW_DEVICES } from "../src/config.ts";
 import { compilePolicy, type CompiledPolicy } from "../src/policy.ts";
 import { executableFromPath } from "../src/state.ts";
 
 const bwrap = executableFromPath("bwrap");
+const cudaProbe = 'import ctypes,sys; cuda=ctypes.CDLL("libcuda.so.1"); count=ctypes.c_int(); status=cuda.cuInit(0); status=status or cuda.cuDeviceGetCount(ctypes.byref(count)); print("CUDA devices:", count.value, "status:", status); sys.exit(status != 0 or count.value < 1)';
 const skip =
     bwrap === undefined
         ? `bubblewrap (bwrap) is not installed; ${BWRAP_INSTALL_HINT} to run this kernel check`
@@ -72,6 +74,7 @@ describe("linux bubblewrap kernel enforcement", { skip }, () => {
         agentDir,
         configPath,
         allowWrite: [`${cacheDir}/`],
+        allowDevices: DEFAULT_ALLOW_DEVICES,
         tempDirs: [],
         profileDir,
     });
@@ -144,7 +147,43 @@ describe("linux bubblewrap kernel enforcement", { skip }, () => {
         assert.equal(result.status, 0, `/dev/pts is not usable inside the sandbox:\n${result.stdout}${result.stderr}`);
     });
 
-    it("exposes no host block device, because /dev is a fresh minimal devtmpfs", () => {
+    it("mounts procfs and sysfs read-write for GPU runtimes", () => {
+        const result = run("grep -Eq '^proc /proc proc rw,' /proc/mounts && grep -Eq '^sysfs /sys sysfs rw,' /proc/mounts && test -w /proc/self/comm");
+        assert.equal(result.status, 0, result.stderr);
+    });
+
+    it("does not expose NVIDIA devices when allowDevices is empty", () => {
+        const result = run("test ! -e /dev/nvidiactl && test ! -e /dev/nvidia0", { ...policy, devices: [] });
+        assert.equal(result.status, 0, result.stderr);
+    });
+
+    it("lets NVIDIA tools use the GPU when the host has a working NVIDIA driver", {
+        skip: (() => {
+            const smi = executableFromPath("nvidia-smi");
+            return smi === undefined || spawnSync(smi, ["-L"], { encoding: "utf-8" }).status !== 0
+                ? "no working NVIDIA GPU on the host"
+                : false;
+        })(),
+    }, () => {
+        const result = run("nvidia-smi -L");
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /GPU [0-9]+:/);
+    });
+
+    it("initializes CUDA and sees a GPU when the host has a working CUDA driver", {
+        skip: (() => {
+            const python = executableFromPath("python3");
+            return python === undefined || spawnSync(python, ["-c", cudaProbe], { encoding: "utf-8" }).status !== 0
+                ? "no working CUDA driver and Python on the host"
+                : false;
+        })(),
+    }, () => {
+        const result = run(`python3 -c '${cudaProbe}'`);
+        assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+        assert.match(result.stdout, /CUDA devices: [1-9][0-9]* status: 0/);
+    });
+
+    it("exposes no host block device, because /dev is a fresh minimal device tree", () => {
         const result = run("ls /dev | grep -E '^(sd[a-z]|nvme|vd[a-z]|mmcblk|dm-|loop)' && exit 1 || exit 0");
 
         assert.equal(result.status, 0, `block devices are visible inside the sandbox:\n${result.stdout}`);

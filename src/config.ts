@@ -2,9 +2,9 @@
  * minibox.json: the one user-editable file that decides what minibox allows.
  *
  * This module owns the file's shape and its lifecycle only. What an entry
- * *means* — `~`, project-relative, directory-vs-file, glob rejection, unsafe
- * roots — belongs to `policy.ts`, so there is exactly one place where a rule is
- * interpreted.
+ * *means* — `~`, project-relative, directory-vs-file, limited device globs,
+ * unsafe roots — belongs to `policy.ts`, so there is exactly one place where a
+ * rule is interpreted.
  *
  * The file is created on first use with the packaged defaults, because a
  * default that only exists in source is a default the operator cannot see or
@@ -42,11 +42,16 @@ export const DEFAULT_ALLOW_WRITE: readonly string[] = Object.freeze([
     "~/.deno/",
 ]);
 
+/** Seeded device globs; an explicit empty allowDevices list disables host device mounts. */
+export const DEFAULT_ALLOW_DEVICES: readonly string[] = Object.freeze(["/dev/nvidia*", "/dev/dri/*"]);
+
 /** The parsed contents of `minibox.json`. */
 export type MiniboxConfig = {
     readonly version: number;
     readonly enabled: boolean;
     readonly allowWrite: readonly string[];
+    /** Character-device paths or trailing-* patterns for Linux bubblewrap. */
+    readonly allowDevices: readonly string[];
 };
 
 /** The config minibox uses when no file exists yet. */
@@ -55,6 +60,7 @@ export function defaultMiniboxConfig(): MiniboxConfig {
         version: MINIBOX_CONFIG_VERSION,
         enabled: true,
         allowWrite: DEFAULT_ALLOW_WRITE,
+        allowDevices: DEFAULT_ALLOW_DEVICES,
     };
 }
 
@@ -125,14 +131,14 @@ function parseConfigObject(raw: unknown): { config: MiniboxConfig; problems: str
 
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
         return {
-            config: { ...defaults, allowWrite: [] },
+            config: { ...defaults, allowWrite: [], allowDevices: [] },
             problems: ["minibox.json must contain a JSON object; using no write rules from it."],
             notes,
         };
     }
 
     const source = raw as Record<string, unknown>;
-    const known = new Set(["version", "enabled", "allowWrite", "denyWrite"]);
+    const known = new Set(["version", "enabled", "allowWrite", "allowDevices", "denyWrite"]);
     for (const key of Object.keys(source)) {
         if (!known.has(key)) notes.push(`minibox.json has an unknown key "${key}"; it is ignored.`);
     }
@@ -165,7 +171,17 @@ function parseConfigObject(raw: unknown): { config: MiniboxConfig; problems: str
         return value;
     })();
 
-    return { config: { version: MINIBOX_CONFIG_VERSION, enabled, allowWrite }, problems, notes };
+    const allowDevices = (() => {
+        const value = source.allowDevices;
+        if (value === undefined) return [...defaults.allowDevices];
+        if (!isStringArray(value)) {
+            problems.push('minibox.json "allowDevices" must be an array of device path strings; ignoring it.');
+            return [];
+        }
+        return value;
+    })();
+
+    return { config: { version: MINIBOX_CONFIG_VERSION, enabled, allowWrite, allowDevices }, problems, notes };
 }
 
 /**
@@ -189,7 +205,7 @@ export function loadMiniboxConfig(configPath: string, seams: ConfigSeams = {}): 
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
-            config: { ...defaultMiniboxConfig(), allowWrite: [] },
+            config: { ...defaultMiniboxConfig(), allowWrite: [], allowDevices: [] },
             problems: [`minibox.json could not be parsed (${message}); using no write rules from it.`],
             notes: [],
             seeded: false,
@@ -287,5 +303,6 @@ function updateDefaults(source: Record<string, unknown>): MiniboxConfig {
         version: MINIBOX_CONFIG_VERSION,
         enabled: typeof source.enabled === "boolean" ? source.enabled : defaults.enabled,
         allowWrite: isStringArray(source.allowWrite) ? source.allowWrite : [...defaults.allowWrite],
+        allowDevices: isStringArray(source.allowDevices) ? source.allowDevices : [...defaults.allowDevices],
     } as MiniboxConfig;
 }

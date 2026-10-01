@@ -35,6 +35,8 @@ const policy: CompiledPolicy = {
     agentDir,
     configPath,
     writable: [
+        { path: "/proc", form: "dir", source: "baseline" },
+        { path: "/sys", form: "dir", source: "baseline" },
         { path: cacheDir, form: "dir", source: "config" },
         { path: projectRoot, form: "dir", source: "project" },
         { path: emptyRoot, form: "dir", source: "baseline" },
@@ -59,6 +61,26 @@ describe("buildBwrapArgs", () => {
 
         assert.equal(file, "/usr/bin/bwrap");
         assert.deepEqual(fileArgs.slice(0, 5), ["--ro-bind", "/", "/", "--dev", "/dev"]);
+    });
+
+    it("binds procfs and sysfs read-write without making the root writable", () => {
+        const { fileArgs } = plan();
+        assert.deepEqual(fileArgs.slice(0, 5), ["--ro-bind", "/", "/", "--dev", "/dev"]);
+        assert.ok(fileArgs.join(" ").includes("--bind /proc /proc"));
+        assert.ok(fileArgs.join(" ").includes("--bind /sys /sys"));
+    });
+
+    it("mounts only configured devices into the private /dev", () => {
+        const unconfigured = plan();
+        assert.equal(unconfigured.fileArgs.includes("--dev-bind-try"), false);
+
+        const { fileArgs } = plan({ devices: ["/dev/null", "/dev/zero"] });
+        const binds = fileArgs.flatMap((arg, index) => arg === "--dev-bind-try" ? [fileArgs.slice(index, index + 3)] : []);
+        assert.deepEqual(binds, [
+            ["--dev-bind-try", "/dev/null", "/dev/null"],
+            ["--dev-bind-try", "/dev/zero", "/dev/zero"],
+        ]);
+        assert.equal(fileArgs.join(" ").includes("--bind /dev /dev"), false);
     });
 
     it("never isolates the network, because minibox only controls writes", () => {

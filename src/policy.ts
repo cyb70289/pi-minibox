@@ -4,7 +4,8 @@
  *
  * The rule set is deliberately small and absolute:
  *
- *   writable = project root + `~/.pi` + temp + `/dev` + `allowWrite` + session grants
+ *   writable = project root + `~/.pi` + temp + Linux `/proc`, `/sys` +
+ *              essential `/dev` devices + `allowWrite` + session grants
  *   denied   = the config file itself and the generated profile directory,
  *              so nothing confined can widen or rewrite its own policy
  *
@@ -12,14 +13,15 @@
  * files on the operator's behalf, so the entry stays inactive and why is
  * reported instead.
  *
- * Entry syntax is concrete paths only. `~` means home, a relative entry means
- * "relative to whichever project this session is in", and a directory entry
+ * `allowWrite` entries are concrete paths only. `~` means home, a relative
+ * entry means "relative to whichever project this session is in", and a directory entry
  * covers its subtree. Mid-path wildcards are rejected rather than accepted on
  * macOS and silently widened on Linux, where bubblewrap can only mount a real
  * directory and would have to bind the pattern's static prefix.
  */
 
-import { sep } from "node:path";
+import { lstatSync, readdirSync } from "node:fs";
+import { isAbsolute, join, resolve, sep } from "node:path";
 
 import {
     canonicalizePath,
@@ -29,6 +31,12 @@ import {
     type PathKind,
     type PathSeams,
 } from "./paths.ts";
+
+/**
+ * Kernel filesystems writable on Linux. CUDA needs to rename helper threads in
+ * procfs; sysfs is also explicitly writable, as part of this baseline policy.
+ */
+export const LINUX_KERNEL_WRITABLE_DIRS: readonly string[] = Object.freeze(["/proc", "/sys"]);
 
 /**
  * Character devices a shell genuinely needs on macOS, where the sandbox cannot
@@ -71,6 +79,7 @@ export type CompiledPolicy = {
     readonly configPath: string;
     readonly writable: readonly WriteEntry[];
     readonly denied: readonly WriteEntry[];
+    /** Baseline macOS devices or resolved Linux character-device config entries. */
     readonly devices: readonly string[];
     /** Directory holding generated profiles; denied so nothing can rewrite its own confinement. */
     readonly profileDir?: string;
@@ -94,6 +103,7 @@ export type CompilePolicyInput = {
     readonly agentDir: string;
     readonly configPath: string;
     readonly allowWrite: readonly string[];
+    readonly allowDevices?: readonly string[];
     readonly sessionPaths?: readonly string[];
     /**
      * Overrides the platform temp directories. Tests use this to keep their own
@@ -264,7 +274,10 @@ export function compilePolicy(input: CompilePolicyInput): CompiledPolicyResult {
     const writable: WriteEntry[] = [
         { path: canonicalizePath(input.projectRoot, seams), form: "dir", source: "project" },
         { path: canonicalizePath(input.agentDir, seams), form: "dir", source: "baseline" },
-        ...(input.tempDirs ?? baselineDirectories(input.platform)).map((path) => ({
+        ...[
+            ...(input.tempDirs ?? baselineDirectories(input.platform)),
+            ...(input.platform === "linux" ? LINUX_KERNEL_WRITABLE_DIRS : []),
+        ].map((path) => ({
             path: canonicalizePath(path, seams),
             form: "dir" as const,
             source: "baseline" as const,
@@ -283,6 +296,10 @@ export function compilePolicy(input: CompilePolicyInput): CompiledPolicyResult {
             return;
         }
         if (result.note !== undefined) notes.push(result.note);
+        if (input.platform === "linux" && contains("/dev", result.entry.path)) {
+            problems.push(`"${template}" is under /dev; use allowDevices for character devices instead of allowWrite.`);
+            return;
+        }
         // A rule for a path that does not exist cannot be applied without
         // creating that path, and minibox never writes on the operator's
         // behalf. The entry stays inactive until it is created, and says so.
@@ -295,6 +312,71 @@ export function compilePolicy(input: CompilePolicyInput): CompiledPolicyResult {
 
     for (const template of input.allowWrite) addWritable(template, "config");
     for (const template of input.sessionPaths ?? []) addWritable(template, "session");
+
+    const devices: string[] = [];
+    if (input.platform === "linux") {
+        for (const template of input.allowDevices ?? []) {
+            const path = template.trim();
+            const glob = path.endsWith("*");
+            const base = glob ? path.slice(0, -1) : path;
+            // Only a final '*' in the filename is supported. In particular,
+            // /dev/* cannot turn every host character device into a default.
+            if (
+                !isAbsolute(path) || !contains("/dev", resolve(base)) || path === "/dev" ||
+                base === "/dev/" || path.endsWith("/") || PATTERN_CHARACTERS.test(base)
+            ) {
+                problems.push(`"${template}" must be a device path under /dev with at most one trailing *; it was ignored.`);
+                continue;
+            }
+            if (glob) {
+                const slash = path.lastIndexOf("/");
+                const directory = path.slice(0, slash);
+                const prefix = path.slice(slash + 1, -1);
+                const canonicalDir = canonicalizePath(directory, seams);
+                if (canonicalDir !== resolve(directory) || !contains("/dev", canonicalDir)) {
+                    problems.push(`"${template}" has a symlinked device directory; it was ignored.`);
+                    continue;
+                }
+                try {
+                    if (!lstatSync(canonicalDir).isDirectory()) {
+                        problems.push(`"${template}" does not name a device directory; it was ignored.`);
+                        continue;
+                    }
+                    for (const name of readdirSync(canonicalDir).sort()) {
+                        if (!name.startsWith(prefix)) continue;
+                        const candidate = join(canonicalDir, name);
+                        try {
+                            // Skip links, directories, regular and block files,
+                            // even when they match the configured name prefix.
+                            if (
+                                lstatSync(candidate).isCharacterDevice() &&
+                                canonicalizePath(candidate, seams) === candidate
+                            ) devices.push(candidate);
+                        } catch {
+                            // A hot-unplug can remove a device during enumeration.
+                        }
+                    }
+                } catch {
+                    // A glob with no existing parent or no devices grants nothing.
+                }
+                continue;
+            }
+            const canonical = canonicalizePath(path, seams);
+            if (canonical !== resolve(path) || !contains("/dev", canonical)) {
+                problems.push(`"${template}" is a symlink or resolves outside /dev; it was ignored.`);
+                continue;
+            }
+            try {
+                if (!lstatSync(canonical).isCharacterDevice()) {
+                    problems.push(`"${template}" is not a character device; it was ignored.`);
+                    continue;
+                }
+                devices.push(canonical);
+            } catch {
+                notes.push(`"${template}" is not available as a character device yet; it was not mounted.`);
+            }
+        }
+    }
 
     const denied: WriteEntry[] = [
         { path: canonicalizePath(input.configPath, seams), form: "file", source: "builtin" },
@@ -315,7 +397,7 @@ export function compilePolicy(input: CompilePolicyInput): CompiledPolicyResult {
             configPath: canonicalizePath(input.configPath, seams),
             writable: normalizeEntries(writable),
             denied: normalizeEntries(denied),
-            devices: input.platform === "darwin" ? MACOS_DEVICE_ALLOWLIST : [],
+            devices: input.platform === "darwin" ? MACOS_DEVICE_ALLOWLIST : [...new Set(devices)].sort(),
             ...(profileDir === undefined ? {} : { profileDir }),
         },
     };

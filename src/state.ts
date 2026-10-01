@@ -208,7 +208,7 @@ export function describeBackendSupport(seams: MiniboxSeams = {}): BackendSupport
 
 const NO_SESSION_REASON = "No session has started yet, so no canonical project root has been captured.";
 
-const EMPTY_CONFIG: MiniboxConfig = { version: 1, enabled: true, allowWrite: [] };
+const EMPTY_CONFIG: MiniboxConfig = { version: 1, enabled: true, allowWrite: [], allowDevices: [] };
 
 export type BeginSessionInput = {
     readonly cwd: string;
@@ -436,6 +436,7 @@ export class MiniboxController {
             agentDir: this.#agentDir,
             configPath: this.#configPath,
             allowWrite: config?.allowWrite ?? [],
+            allowDevices: config?.allowDevices ?? [],
             sessionPaths: this.#grants,
             // Only the Seatbelt backend reads a profile from disk. Creating the
             // directory on Linux would be a filesystem side effect of merely
