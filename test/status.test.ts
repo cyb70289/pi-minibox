@@ -22,7 +22,7 @@ before(() => {
 after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
 const config: LoadedMiniboxConfig = {
-    config: { version: 1, enabled: true, allowWrite: [], denyWrite: [".env"] },
+    config: { version: 1, enabled: true, allowWrite: [] },
     problems: [],
     notes: [],
     seeded: false,
@@ -159,7 +159,7 @@ describe("policyLists", () => {
 
         assert.ok(lists.writableDirs.includes(projectRoot));
         assert.deepEqual(lists.writableFiles, []);
-        assert.deepEqual(lists.denyDirs, []);
-        assert.deepEqual(lists.denyFiles, [join(projectRoot, ".env"), configPath].sort());
+        assert.deepEqual(lists.denyDirs, [join(fixtureRoot, "profiles")]);
+        assert.deepEqual(lists.denyFiles, [configPath]);
     });
 });

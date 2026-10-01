@@ -1,50 +1,56 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 
-import { BWRAP_PROBE_ARGS, buildBwrapArgs, isUserNamespaceFailure, materializeDenyPath, probeBwrap } from "../src/bwrap.ts";
+import { BWRAP_PROBE_ARGS, buildBwrapArgs, isUserNamespaceFailure, probeBwrap } from "../src/bwrap.ts";
 import type { CompiledPolicy } from "../src/policy.ts";
+
+const fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "minibox-bwrap-")));
+const projectRoot = join(fixtureRoot, "proj");
+const home = join(fixtureRoot, "home");
+const agentDir = join(home, ".pi");
+const configPath = join(agentDir, "minibox.json");
+const cacheDir = join(home, ".npm");
+const serviceConf = join(projectRoot, "service.conf");
+const missingConf = join(projectRoot, "missing.conf");
+const emptyRoot = join(fixtureRoot, "empty-root");
+const profileDir = join(fixtureRoot, "profiles");
+
+before(() => {
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(agentDir, { recursive: true });
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(serviceConf, "x");
+    writeFileSync(configPath, "{}");
+});
+
+after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
 const policy: CompiledPolicy = {
     platform: "linux",
-    projectRoot: "/proj",
-    home: "/home/u",
-    agentDir: "/home/u/.pi",
-    configPath: "/home/u/.pi/minibox.json",
+    projectRoot,
+    home,
+    agentDir,
+    configPath,
     writable: [
-        { path: "/home/u/.npm", form: "dir", source: "config" },
-        { path: "/proj", form: "dir", source: "project" },
-        { path: "/var/empty-root", form: "dir", source: "baseline" },
-        { path: "/proj/service.conf", form: "file", source: "session" },
-        { path: "/proj/missing.conf", form: "file", source: "session" },
+        { path: cacheDir, form: "dir", source: "config" },
+        { path: projectRoot, form: "dir", source: "project" },
+        { path: emptyRoot, form: "dir", source: "baseline" },
+        { path: serviceConf, form: "file", source: "session" },
+        { path: missingConf, form: "file", source: "session" },
     ],
     denied: [
-        { path: "/home/u/.pi/minibox.json", form: "file", source: "builtin" },
-        { path: "/proj/.env", form: "file", source: "config" },
+        { path: configPath, form: "file", source: "builtin" },
+        { path: profileDir, form: "dir", source: "builtin" },
     ],
     devices: [],
-    profileDir: "/proj/profiles",
+    profileDir,
 };
 
-const existing = new Set([
-    "/home/u/.npm",
-    "/proj",
-    "/proj/service.conf",
-    "/home/u/.pi/minibox.json",
-]);
-const materialized: string[] = [];
-
 function plan(overrides: Partial<CompiledPolicy> = {}) {
-    materialized.length = 0;
-    return buildBwrapArgs("/usr/bin/bwrap", { ...policy, ...overrides }, "/bin/bash", ["-c", "echo hi"], {
-        exists: (path) => existing.has(path),
-        materializeDenyPath: (path) => {
-            materialized.push(path);
-            return true;
-        },
-    });
+    return buildBwrapArgs("/usr/bin/bwrap", { ...policy, ...overrides }, "/bin/bash", ["-c", "echo hi"]);
 }
 
 describe("buildBwrapArgs", () => {
@@ -65,17 +71,16 @@ describe("buildBwrapArgs", () => {
     it("binds each writable root read-write", () => {
         const { fileArgs } = plan();
 
-        assert.ok(fileArgs.join(" ").includes("--bind /proj /proj"));
-        assert.ok(fileArgs.join(" ").includes("--bind /home/u/.npm /home/u/.npm"));
-        assert.ok(fileArgs.join(" ").includes("--bind /proj/service.conf /proj/service.conf"));
+        assert.ok(fileArgs.join(" ").includes(`--bind ${projectRoot} ${projectRoot}`));
+        assert.ok(fileArgs.join(" ").includes(`--bind ${cacheDir} ${cacheDir}`));
+        assert.ok(fileArgs.join(" ").includes(`--bind ${serviceConf} ${serviceConf}`));
     });
 
-    it("falls back to --bind-try for a missing writable directory and reports a missing writable file", () => {
-        const result = plan();
+    it("falls back to --bind-try for a missing writable directory and skips a missing writable file", () => {
+        const { fileArgs } = plan();
 
-        assert.ok(result.fileArgs.join(" ").includes("--bind-try /var/empty-root /var/empty-root"));
-        assert.deepEqual(result.inactiveWritablePaths, ["/proj/missing.conf"]);
-        assert.equal(result.fileArgs.includes("/proj/missing.conf"), false);
+        assert.ok(fileArgs.join(" ").includes(`--bind-try ${emptyRoot} ${emptyRoot}`));
+        assert.equal(fileArgs.includes(missingConf), false);
     });
 
     it("mounts denies after every writable bind so they win", () => {
@@ -88,26 +93,40 @@ describe("buildBwrapArgs", () => {
         assert.ok(lastBind < firstDeny, `last bind at ${lastBind} must precede first deny at ${firstDeny}`);
     });
 
-    it("materializes an absent denied path inside a writable region so it can be denied", () => {
-        const result = plan();
-
-        assert.deepEqual(materialized, ["/proj/.env"]);
-        assert.ok(result.fileArgs.join(" ").includes("--ro-bind /proj/.env /proj/.env"));
-    });
-
-    it("uses --ro-bind-try for a denied path it cannot create, instead of inventing one", () => {
-        const result = buildBwrapArgs("/usr/bin/bwrap", policy, "/bin/bash", [], {
-            exists: (path) => existing.has(path),
-            materializeDenyPath: () => false,
+    it("binds an existing deny read-only and leaves an absent one to --ro-bind-try", () => {
+        const absentDeny = join(projectRoot, ".env");
+        const { fileArgs } = plan({
+            denied: [
+                ...policy.denied,
+                { path: absentDeny, form: "file", source: "builtin" },
+            ],
         });
 
-        assert.ok(result.fileArgs.join(" ").includes("--ro-bind-try /proj/.env /proj/.env"));
+        assert.ok(fileArgs.join(" ").includes(`--ro-bind ${configPath} ${configPath}`));
+        assert.ok(fileArgs.join(" ").includes(`--ro-bind-try ${profileDir} ${profileDir}`));
+        assert.ok(fileArgs.join(" ").includes(`--ro-bind-try ${absentDeny} ${absentDeny}`));
+    });
+
+    it("creates nothing on the host, not even for an absent deny path", () => {
+        const absentDeny = join(projectRoot, ".env");
+
+        plan({
+            denied: [
+                ...policy.denied,
+                { path: absentDeny, form: "file", source: "builtin" },
+            ],
+        });
+
+        assert.equal(existsSync(absentDeny), false, "a deny mount point must never be materialized");
+        assert.equal(existsSync(missingConf), false, "a missing writable file is not created");
+        assert.equal(existsSync(emptyRoot), false, "a missing writable directory is not created");
+        assert.equal(existsSync(profileDir), false, "a missing deny directory is not created");
     });
 
     it("denies the generated profile directory", () => {
         const { fileArgs } = plan();
 
-        assert.ok(fileArgs.join(" ").includes("--ro-bind-try /proj/profiles /proj/profiles"));
+        assert.ok(fileArgs.join(" ").includes(`--ro-bind-try ${profileDir} ${profileDir}`));
     });
 
     it("puts the target command after the option terminator", () => {
@@ -125,11 +144,11 @@ describe("probeBwrap", () => {
     });
 
     it("reports success when the probe process exits cleanly", () => {
-        assert.deepEqual(probeBwrap("/bin/true"), { ok: true });
+        assert.deepEqual(probeBwrap("/usr/bin/true"), { ok: true });
     });
 
     it("reports the exit status when the probe fails without stderr", () => {
-        const probe = probeBwrap("/bin/false");
+        const probe = probeBwrap("/usr/bin/false");
 
         assert.equal(probe.ok, false);
         assert.match(probe.ok === false ? probe.reason : "", /status 1/);
@@ -154,31 +173,11 @@ describe("isUserNamespaceFailure", () => {
     });
 });
 
-describe("materializeDenyPath", () => {
-    const root = mkdtempSync(join(tmpdir(), "minibox-bwrap-"));
+describe("no host mutation", () => {
+    it("reads the config file without writing to it", () => {
+        writeFileSync(configPath, '{"version":1}');
+        plan();
 
-    after(() => rmSync(root, { recursive: true, force: true }));
-
-    it("creates an empty file for an absent denied path", () => {
-        const target = join(root, "nested", ".env");
-
-        assert.equal(materializeDenyPath(target), true);
-        assert.equal(readFileSync(target, "utf-8"), "");
-    });
-
-    it("leaves an existing file alone", () => {
-        const target = join(root, "existing.env");
-        writeFileSync(target, "secret");
-
-        assert.equal(materializeDenyPath(target), true);
-        assert.equal(readFileSync(target, "utf-8"), "secret");
-    });
-
-    it("reports failure when the path cannot be created", () => {
-        const blocker = join(root, "blocker");
-        writeFileSync(blocker, "not a directory");
-
-        assert.equal(materializeDenyPath(join(blocker, "child")), false);
-        assert.equal(existsSync(join(blocker, "child")), false);
+        assert.equal(readFileSync(configPath, "utf-8"), '{"version":1}');
     });
 });

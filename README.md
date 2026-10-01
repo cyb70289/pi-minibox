@@ -94,7 +94,15 @@ devices like `/dev/disk*` are not writable. On Linux `--dev /dev` mounts a fresh
 minimal devtmpfs, so host block devices do not exist inside the sandbox at all;
 it also mounts `devpts` at `/dev/pts`, so ptys and interactive shells work.
 
-`denyWrite` rules beat every one of these, including the project root.
+Two internal paths are always denied, on both backends: `minibox.json` itself,
+and the directory generated profiles are written to. Both target paths that
+already exist, so enforcing them never creates anything, and nothing inside the
+sandbox can widen or rewrite its own policy.
+
+minibox never creates files or directories on your behalf. An `allowWrite` entry
+whose path does not exist is **not** granted: it stays inactive until you create
+it, and `/minibox` reports it. That is what keeps macOS and Linux behaving
+identically, and what makes enabling minibox free of filesystem side effects.
 
 ## `minibox.json`
 
@@ -105,8 +113,7 @@ Created on first run at `~/.pi/agent/minibox.json` (i.e. `$PI_CODING_AGENT_DIR`)
   "version": 1,
   "enabled": true,
   "allowWrite": ["~/.npm/", "~/.cache/", "~/.local/", "~/.bun/", "~/.cargo/",
-                 "~/.gradle/", "~/.m2/", "~/.rustup/", "~/.deno/"],
-  "denyWrite": [".env", ".env.local", ".git/hooks"]
+                 "~/.gradle/", "~/.m2/", "~/.rustup/", "~/.deno/"]
 }
 ```
 
@@ -119,13 +126,13 @@ Entry rules:
   error rather than silently matching nothing on macOS and silently matching too
   much on Linux (bubblewrap can only mount a real directory, so a pattern there
   would have to grant its whole static prefix).
-- A **directory** rule covers its whole subtree. A trailing `/` says "this is a
-  directory" before it exists; `out/**` is the same rule.
-- A bare entry that does not exist yet is a **single file**, not a directory.
-- Directory-shaped entries that do not exist are created (`mkdir -p`) so that
-  both backends grant the same thing. That is a visible side effect: if you add
-  `~/scratch/`, minibox creates `~/scratch` on the next session.
-- Paths are canonicalized, so a symlink cannot widen a rule or slip past a deny.
+- A **directory** rule covers its whole subtree. A trailing `/` marks a
+  directory; `out/**` is the same rule.
+- An entry whose path does not exist is **inactive**: minibox does not create
+  it, and reports it instead. A missing `~/scratch/` therefore grants nothing
+  until you create `~/scratch` yourself. This is deliberate — no minibox code
+  path writes to the host.
+- Paths are canonicalized, so a symlink cannot widen a rule.
 - The file is re-read when it changes, so an edit applies to the next write.
 
 If the file cannot be parsed, its rules are dropped, the built-in rules stay in
@@ -193,22 +200,24 @@ protect nothing, so minibox refuses to pretend.
 
 ## Verification status
 
-**macOS: verified against the real kernel.** 139 unit tests plus real
-`sandbox-exec` runs (allow/deny by filesystem effect, deny-beats-allow, single
-file whitelist, profile-directory protection, `/dev/null`, no `/dev/disk*`,
-a confined child process), and a live tmux session proving: no prompt inside the
+**macOS: verified against the real kernel.** The unit suite plus real
+`sandbox-exec` runs (allow and refuse by filesystem effect, single file
+whitelist, profile-directory protection, `/dev/null`, no `/dev/disk*`, a
+confined child process), and a live tmux session proving: no prompt inside the
 project, prompt outside, "Yes" writes and remembers, second write to the same
 path does not prompt, "No" and the 60s timeout block with the exact message the
 model sees, `/minibox off` and `on` take effect immediately, `default on|off`
 persists, and an approval survives `pi -c` while a new path still prompts.
 
 **Linux: verified against the real kernel on Ubuntu 24.04 (bubblewrap 0.9.0,
-kernel 6.17).** The full suite is 148 tests, 9 of which are the real `bwrap`
-kernel checks in `test/linux-bwrap.integration.test.ts`: a write inside the
-project root succeeds, a write outside it and a denied `.env` are refused, the
-agent and configured cache directories are writable, reads and `/dev/null` still
-work, no host block device exists, and the generated profile directory is not
-writable. Both details that only a real run could settle are now settled:
+kernel 6.17).** The suite includes the real `bwrap` kernel checks in
+`test/linux-bwrap.integration.test.ts`: a write inside the project root
+succeeds, a write outside it is refused, a protected command leaves the project
+byte-identical (no `.env`, `.env.local`, or `.git` springing into existence),
+`minibox.json` is not writable, the agent and configured cache directories are
+writable, reads and `/dev/null` still work, no host block device exists, and the
+generated profile directory is not writable. Two details that only a real run
+could settle are now settled:
 
 - `/dev/pts` **is** present under `--dev`: `/dev/pts/ptmx` exists and devpts is
   mounted there, so no extra `--dev-bind /dev/pts /dev/pts` is needed.
@@ -233,7 +242,8 @@ scripts/tui-check.sh           # manual: drives a real Pi session in tmux
 ```
 
 Layout: `index.ts` wires the extension; `src/config.ts` owns `minibox.json`;
-`src/policy.ts` turns rules into writable/denied sets; `src/seatbelt.ts` and
+`src/policy.ts` turns rules into the writable set and the two internal denies;
+`src/seatbelt.ts` and
 `src/bwrap.ts` generate the two backends; `src/state.ts` owns session state;
 `src/guard.ts` is the `write`/`edit` guard and the dialog; `src/shell.ts` wraps
 the bash child. `src/bwrap.ts` also owns the one-shot probe that decides whether

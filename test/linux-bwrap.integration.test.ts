@@ -11,13 +11,14 @@
  * Verified on Ubuntu 24.04 with bubblewrap 0.9.0 (kernel 6.17). The findings:
  *   * `bwrap --dev /dev` DOES provide `/dev/pts` (with `/dev/pts/ptmx` and a
  *     mounted devpts), so no extra `--dev-bind /dev/pts /dev/pts` is needed.
- *   * A denied path inside a writable region is materialized as an empty
- *     placeholder, so a refused write leaves the placeholder, not nothing.
+ *   * Nothing is created on the host for a denied or missing path: an absent
+ *     deny is skipped with `--ro-bind-try`, and the policy drops missing allow
+ *     entries instead of creating them.
  */
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -42,12 +43,16 @@ describe("linux bubblewrap kernel enforcement", { skip }, () => {
     const outsidePath = join(fixtureRoot, "outside.txt");
     const profileDir = join(fixtureRoot, "profiles");
 
-    before(() => {
-        mkdirSync(projectRoot, { recursive: true });
-        mkdirSync(agentDir, { recursive: true });
-        mkdirSync(cacheDir, { recursive: true });
-        mkdirSync(profileDir, { recursive: true });
+    // The policy is compiled from the real fixture, and an allow entry whose
+    // path does not exist is intentionally inactive, so the fixture has to exist
+    // before the policy is built -- not just before the tests run.
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(agentDir, { recursive: true });
+    mkdirSync(cacheDir, { recursive: true });
+    mkdirSync(profileDir, { recursive: true });
+    writeFileSync(configPath, "{}");
 
+    before(() => {
         // An installed bwrap is not necessarily a usable one. Fail here, once,
         // with the actionable reason, rather than as seven confusing assertion
         // failures that all say "setting up uid map: Permission denied".
@@ -67,7 +72,6 @@ describe("linux bubblewrap kernel enforcement", { skip }, () => {
         agentDir,
         configPath,
         allowWrite: [`${cacheDir}/`],
-        denyWrite: [".env"],
         tempDirs: [],
         profileDir,
     });
@@ -97,16 +101,27 @@ describe("linux bubblewrap kernel enforcement", { skip }, () => {
         assert.equal(existsSync(outsidePath), false);
     });
 
-    it("refuses a denied file inside the project root and leaves its placeholder empty", () => {
-        const denied = join(projectRoot, ".env");
-        const result = run(`echo secret > ${denied}`);
+    it("creates no host artifacts for a protected command", () => {
+        // The regression this suite exists for: minibox used to create empty
+        // placeholders such as .env and .env.local in the project root.
+        const dotenv = join(projectRoot, ".env");
+        const dotenvLocal = join(projectRoot, ".env.local");
+        const dotGit = join(projectRoot, ".git");
+        for (const path of [dotenv, dotenvLocal, dotGit]) assert.equal(existsSync(path), false);
+
+        assert.equal(run("true").status, 0);
+        assert.equal(run(`echo x > ${join(projectRoot, "inside.txt")}`).status, 0);
+
+        for (const path of [dotenv, dotenvLocal, dotGit]) {
+            assert.equal(existsSync(path), false, `${path} must not be created by a sandbox launch`);
+        }
+    });
+
+    it("refuses to write the minibox config file, which is an internal deny", () => {
+        const result = run(`echo pwned > ${configPath}`);
 
         assert.notEqual(result.status, 0);
-        // `bwrap` cannot mount a deny onto a path that does not exist, so the
-        // builder materializes an empty placeholder first. The write is refused;
-        // the placeholder is what remains, empty.
-        assert.equal(existsSync(denied), true);
-        assert.equal(readFileSync(denied, "utf-8"), "");
+        assert.equal(readFileSync(configPath, "utf-8"), "{}");
     });
 
     it("allows the agent directory and a configured cache directory", () => {

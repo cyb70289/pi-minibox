@@ -7,7 +7,6 @@ import { after, beforeEach, describe, it } from "node:test";
 import {
     createMiniboxConfigCache,
     DEFAULT_ALLOW_WRITE,
-    DEFAULT_DENY_WRITE,
     loadMiniboxConfig,
     MINIBOX_CONFIG_BASENAME,
     MiniboxConfigWriteError,
@@ -40,21 +39,19 @@ describe("loadMiniboxConfig", () => {
         assert.deepEqual(loaded.problems, []);
         assert.equal(loaded.config.enabled, true);
         assert.deepEqual(loaded.config.allowWrite, [...DEFAULT_ALLOW_WRITE]);
-        assert.deepEqual(loaded.config.denyWrite, [...DEFAULT_DENY_WRITE]);
 
         const onDisk = JSON.parse(readFileSync(configPath, "utf-8")) as { enabled: boolean };
         assert.equal(onDisk.enabled, true);
     });
 
     it("reads a valid file", () => {
-        writeFileSync(configPath, JSON.stringify({ version: 1, enabled: false, allowWrite: ["/tmp/out"], denyWrite: [".env"] }));
+        writeFileSync(configPath, JSON.stringify({ version: 1, enabled: false, allowWrite: ["/tmp/out"] }));
 
         const loaded = loadMiniboxConfig(configPath);
 
         assert.equal(loaded.seeded, false);
         assert.equal(loaded.config.enabled, false);
         assert.deepEqual(loaded.config.allowWrite, ["/tmp/out"]);
-        assert.deepEqual(loaded.config.denyWrite, [".env"]);
     });
 
     it("falls back to the safe interpretation of unparseable JSON", () => {
@@ -64,7 +61,6 @@ describe("loadMiniboxConfig", () => {
 
         assert.equal(loaded.malformed, true);
         assert.equal(loaded.config.allowWrite.length, 0);
-        assert.equal(loaded.config.denyWrite.length, 0);
         assert.equal(loaded.config.enabled, true);
         assert.match(loaded.problems[0] ?? "", /could not be parsed/);
     });
@@ -76,18 +72,25 @@ describe("loadMiniboxConfig", () => {
 
         assert.equal(loaded.malformed, false);
         assert.deepEqual(loaded.config.allowWrite, []);
-        assert.deepEqual(loaded.config.denyWrite, []);
         assert.match(loaded.problems[0] ?? "", /JSON object/);
     });
 
     it("drops a wrongly typed list instead of guessing", () => {
-        writeFileSync(configPath, JSON.stringify({ allowWrite: "~/.npm", denyWrite: [7] }));
+        writeFileSync(configPath, JSON.stringify({ allowWrite: "~/.npm" }));
 
         const loaded = loadMiniboxConfig(configPath);
 
         assert.deepEqual(loaded.config.allowWrite, []);
-        assert.deepEqual(loaded.config.denyWrite, []);
-        assert.equal(loaded.problems.length, 2);
+        assert.equal(loaded.problems.length, 1);
+    });
+
+    it("ignores a legacy denyWrite key with a note", () => {
+        writeFileSync(configPath, JSON.stringify({ version: 1, enabled: true, denyWrite: [".env"] }));
+
+        const loaded = loadMiniboxConfig(configPath);
+
+        assert.equal(loaded.problems.length, 0);
+        assert.ok(loaded.notes.some((note) => /denyWrite.*no longer supported/.test(note)), loaded.notes.join("; "));
     });
 
     it("notes unknown keys without failing", () => {
@@ -128,7 +131,7 @@ describe("setMiniboxEnabled", () => {
         const onDisk = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
         assert.equal(onDisk.enabled, false);
         assert.deepEqual(onDisk.allowWrite, ["/tmp/out"]);
-        assert.deepEqual(onDisk.denyWrite, [".env"]);
+        assert.equal("denyWrite" in onDisk, false, "a removed feature is not written back");
         assert.equal(onDisk.custom, "keep");
     });
 
@@ -216,7 +219,7 @@ describe("createMiniboxConfigCache", () => {
 
 describe("serializeMiniboxConfig", () => {
     it("round-trips through the loader", () => {
-        writeFileSync(configPath, serializeMiniboxConfig({ version: 1, enabled: false, allowWrite: ["~/x"], denyWrite: [] }));
+        writeFileSync(configPath, serializeMiniboxConfig({ version: 1, enabled: false, allowWrite: ["~/x"] }));
 
         const loaded = loadMiniboxConfig(configPath);
 

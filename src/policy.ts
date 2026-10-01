@@ -5,8 +5,12 @@
  * The rule set is deliberately small and absolute:
  *
  *   writable = project root + `~/.pi` + temp + `/dev` + `allowWrite` + session grants
- *   denied   = the config file itself + `denyWrite`
- *   deny beats allow, always, including inside the project root.
+ *   denied   = the config file itself and the generated profile directory,
+ *              so nothing confined can widen or rewrite its own policy
+ *
+ * An allow entry that does not exist is not granted: minibox never creates
+ * files on the operator's behalf, so the entry stays inactive and why is
+ * reported instead.
  *
  * Entry syntax is concrete paths only. `~` means home, a relative entry means
  * "relative to whichever project this session is in", and a directory entry
@@ -90,7 +94,6 @@ export type CompilePolicyInput = {
     readonly agentDir: string;
     readonly configPath: string;
     readonly allowWrite: readonly string[];
-    readonly denyWrite: readonly string[];
     readonly sessionPaths?: readonly string[];
     /**
      * Overrides the platform temp directories. Tests use this to keep their own
@@ -129,14 +132,12 @@ type ResolvedEntry = { readonly entry: WriteEntry; readonly note?: string };
 /**
  * Turn one config template into a concrete rule.
  *
- * `allow` and `deny` differ in one respect: an allow entry that resolves to the
- * filesystem root is refused, because it would present minibox as active while
- * protecting nothing.
+ * An entry that resolves to the filesystem root is refused, because it would
+ * present minibox as active while protecting nothing.
  */
 function resolveTemplate(
     template: string,
     options: {
-        readonly kind: "allow" | "deny";
         readonly projectRoot: string;
         readonly home: string;
         readonly source: WriteSource;
@@ -166,7 +167,7 @@ function resolveTemplate(
     const entry: WriteEntry = { path: canonical, form, source: options.source, template };
 
     const notes: string[] = [];
-    if (options.kind === "allow" && (canonical === options.home || contains(canonical, options.home))) {
+    if (canonical === options.home || contains(canonical, options.home)) {
         notes.push(`"${template}" covers the home directory (${canonical}); every write under home is now allowed.`);
     }
     return notes.length === 1 ? { entry, note: notes[0] as string } : { entry };
@@ -256,61 +257,37 @@ export function compilePolicy(input: CompilePolicyInput): CompiledPolicyResult {
         })),
     ];
 
-    for (const template of input.allowWrite) {
+    const addWritable = (template: string, source: WriteSource): void => {
         const result = resolveTemplate(template, {
-            kind: "allow",
             projectRoot: input.projectRoot,
             home: input.home,
-            source: "config",
+            source,
             seams,
         });
         if ("problem" in result) {
             problems.push(result.problem);
-            continue;
+            return;
         }
-        writable.push(result.entry);
         if (result.note !== undefined) notes.push(result.note);
-    }
-
-    for (const template of input.sessionPaths ?? []) {
-        const result = resolveTemplate(template, {
-            kind: "allow",
-            projectRoot: input.projectRoot,
-            home: input.home,
-            source: "session",
-            seams,
-        });
-        if ("problem" in result) {
-            problems.push(result.problem);
-            continue;
+        // A rule for a path that does not exist cannot be applied without
+        // creating that path, and minibox never writes on the operator's
+        // behalf. The entry stays inactive until it is created, and says so.
+        if (pathKind(result.entry.path) === "missing") {
+            notes.push(`"${template}" does not exist yet; it is not writable until it is created.`);
+            return;
         }
         writable.push(result.entry);
-    }
+    };
+
+    for (const template of input.allowWrite) addWritable(template, "config");
+    for (const template of input.sessionPaths ?? []) addWritable(template, "session");
 
     const denied: WriteEntry[] = [
         { path: canonicalizePath(input.configPath, seams), form: "file", source: "builtin" },
     ];
-
-    const projectRoot = canonicalizePath(input.projectRoot, seams);
-    for (const template of input.denyWrite) {
-        const result = resolveTemplate(template, {
-            kind: "deny",
-            projectRoot: input.projectRoot,
-            home: input.home,
-            source: "config",
-            seams,
-        });
-        if ("problem" in result) {
-            problems.push(result.problem);
-            continue;
-        }
-        if (contains(result.entry.path, projectRoot)) {
-            problems.push(
-                `"${template}" contains the project root (${projectRoot}) and would deny every write in it; it was ignored.`,
-            );
-            continue;
-        }
-        denied.push(result.entry);
+    const profileDir = input.profileDir === undefined ? undefined : canonicalizePath(input.profileDir, seams);
+    if (profileDir !== undefined) {
+        denied.push({ path: profileDir, form: "dir", source: "builtin" });
     }
 
     return {
@@ -318,16 +295,14 @@ export function compilePolicy(input: CompilePolicyInput): CompiledPolicyResult {
         notes,
         policy: {
             platform: input.platform,
-            projectRoot,
+            projectRoot: canonicalizePath(input.projectRoot, seams),
             home: input.home,
             agentDir: canonicalizePath(input.agentDir, seams),
             configPath: canonicalizePath(input.configPath, seams),
             writable: normalizeEntries(writable),
             denied: normalizeEntries(denied),
             devices: input.platform === "darwin" ? MACOS_DEVICE_ALLOWLIST : [],
-            ...(input.profileDir === undefined
-                ? {}
-                : { profileDir: canonicalizePath(input.profileDir, seams) }),
+            ...(profileDir === undefined ? {} : { profileDir }),
         },
     };
 }
@@ -348,9 +323,6 @@ export function evaluateWriteAccess(
 
     for (const rule of policy.denied) {
         if (contains(rule.path, path)) return { allowed: false, path, reason: "denied", deniedBy: rule.path };
-    }
-    if (policy.profileDir !== undefined && contains(policy.profileDir, path)) {
-        return { allowed: false, path, reason: "denied", deniedBy: policy.profileDir };
     }
     for (const rule of policy.writable) {
         if (contains(rule.path, path)) return { allowed: true, path };

@@ -208,7 +208,7 @@ export function describeBackendSupport(seams: MiniboxSeams = {}): BackendSupport
 
 const NO_SESSION_REASON = "No session has started yet, so no canonical project root has been captured.";
 
-const EMPTY_CONFIG: MiniboxConfig = { version: 1, enabled: true, allowWrite: [], denyWrite: [] };
+const EMPTY_CONFIG: MiniboxConfig = { version: 1, enabled: true, allowWrite: [] };
 
 export type BeginSessionInput = {
     readonly cwd: string;
@@ -383,7 +383,9 @@ export class MiniboxController {
             )
             .digest("hex")
             .slice(0, 16);
-        return { confined: true, policy, profilePath: join(this.#ensureProfileDir(), `minibox-${digest}.sb`) };
+        // Only the macOS backend writes a profile file; on Linux the path is a
+        // nominal value the backend never reads.
+        return { confined: true, policy, profilePath: join(policy.profileDir ?? tmpdir(), `minibox-${digest}.sb`) };
     }
 
     /** Drop generated profiles. Idempotent. */
@@ -426,48 +428,22 @@ export class MiniboxController {
 
     #compile(): ReturnType<typeof compilePolicy> {
         const config = this.#config;
-        const compiled = compilePolicy({
-            platform: (this.#seams.platform ?? (() => process.platform))(),
+        const platform = (this.#seams.platform ?? (() => process.platform))();
+        return compilePolicy({
+            platform,
             projectRoot: this.#projectRoot ?? "",
             home: this.#home(),
             agentDir: this.#agentDir,
             configPath: this.#configPath,
             allowWrite: config?.allowWrite ?? [],
-            denyWrite: config?.denyWrite ?? [],
             sessionPaths: this.#grants,
-            profileDir: this.#ensureProfileDir(),
+            // Only the Seatbelt backend reads a profile from disk. Creating the
+            // directory on Linux would be a filesystem side effect of merely
+            // asking for status.
+            ...(platform === "darwin" ? { profileDir: this.#ensureProfileDir() } : {}),
             seams: this.#pathSeams(),
             ...(this.#seams.tempDirs === undefined ? {} : { tempDirs: this.#seams.tempDirs }),
         });
-        const materializeProblems = this.#materializeWritableDirs(compiled.policy);
-        return materializeProblems.length === 0
-            ? compiled
-            : { ...compiled, problems: [...compiled.problems, ...materializeProblems] };
-    }
-
-    /**
-     * Create the directory-shaped writable entries that do not exist yet.
-     *
-     * A configured directory has to exist to be mounted read-write on Linux,
-     * and creating it keeps the two backends behaving identically: on macOS the
-     * rule would work anyway, so without this step `~/out/` would be writable on
-     * one platform and not on the other. Only entries explicitly shaped as a
-     * directory are created -- a bare entry is a single file, never a directory.
-     */
-    #materializeWritableDirs(policy: CompiledPolicy): string[] {
-        const problems: string[] = [];
-        for (const entry of policy.writable) {
-            if (entry.source !== "config" && entry.source !== "session") continue;
-            if (entry.form !== "dir") continue;
-            try {
-                mkdirSync(entry.path, { recursive: true });
-            } catch (error) {
-                problems.push(
-                    `could not create the directory "${entry.template ?? entry.path}" (${error instanceof Error ? error.message : String(error)}); writes there are not granted.`,
-                );
-            }
-        }
-        return problems;
     }
 
     #pathSeams(): PathSeams {

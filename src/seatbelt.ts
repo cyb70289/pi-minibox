@@ -49,9 +49,6 @@ export function buildSeatbeltProfile(policy: CompiledPolicy): string {
         // A denied file is denied as a subtree as well: the extra rule covers a
         // directory created at that name, which a plain literal would not.
         ...denyFiles(policy).map((path) => `(deny file-write* (subpath ${sbpl(path)}))`),
-        // Internal: a confined command must not be able to rewrite the profile
-        // the next command launches under.
-        ...(policy.profileDir === undefined ? [] : [`(deny file-write* (subpath ${sbpl(policy.profileDir)}))`]),
     ];
 
     return ["(version 1)", "(allow default)", "(deny file-write*)", ...allows, ...denies, ""].join("\n");

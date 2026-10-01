@@ -24,7 +24,7 @@ after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
 function loaded(overrides: Partial<LoadedMiniboxConfig["config"]> = {}): LoadedMiniboxConfig {
     return {
-        config: { version: 1, enabled: true, allowWrite: [], denyWrite: [".env"], ...overrides },
+        config: { version: 1, enabled: true, allowWrite: [], ...overrides },
         problems: [],
         notes: [],
         seeded: false,
@@ -215,16 +215,17 @@ describe("MiniboxController", () => {
         assert.throws(() => instance.requireLaunchPlan(), MiniboxBlockedError);
     });
 
-    it("compiles the project root, agent dir, and config rules into the policy", () => {
+    it("compiles the project root, agent dir, and config rules; the config file stays denied", () => {
+        mkdirSync(join(home, "cache"), { recursive: true });
         const instance = controller();
-        const status = session(instance, projectRoot, loaded({ allowWrite: ["~/cache/"], denyWrite: [".env"] }));
+        const status = session(instance, projectRoot, loaded({ allowWrite: ["~/cache/"] }));
 
         assert.equal(status.state, "enabled");
         const paths = status.policy?.writable.map((entry) => entry.path) ?? [];
         assert.ok(paths.includes(projectRoot));
         assert.ok(paths.includes(agentDir));
         assert.ok(paths.includes(join(home, "cache")));
-        assert.ok((status.policy?.denied ?? []).some((entry) => entry.path === join(projectRoot, ".env")));
+        assert.ok((status.policy?.denied ?? []).some((entry) => entry.path === configPath));
     });
 
     it("includes session grants in the compiled policy and in the profile identity", () => {
@@ -325,7 +326,7 @@ describe("MiniboxController", () => {
         session(instance, projectRoot, loaded({ enabled: false }));
         instance.enable();
 
-        const status = instance.applyDefault({ version: 1, enabled: false, allowWrite: [], denyWrite: [] });
+        const status = instance.applyDefault({ version: 1, enabled: false, allowWrite: [] });
 
         assert.equal(status.state, "inactive");
         assert.equal(status.enabledByDefault, false);
@@ -347,36 +348,41 @@ describe("config files that do not exist yet", () => {
     });
 });
 
-describe("directory-shaped writable entries", () => {
-    it("creates a missing directory entry so both backends can grant it", () => {
+describe("missing writable entries", () => {
+    it("does not create a missing directory entry and reports it as inactive", () => {
         const instance = controller();
-        const created = join(home, "build-output");
-        assert.equal(existsSync(created), false);
+        const missing = join(home, "build-output");
+        assert.equal(existsSync(missing), false);
 
         const status = session(instance, projectRoot, loaded({ allowWrite: ["~/build-output/"] }));
 
-        assert.equal(existsSync(created), true);
-        assert.ok(status.policy?.writable.some((entry) => entry.path === created && entry.form === "dir"));
+        assert.equal(existsSync(missing), false, "minibox must not create allowWrite directories");
+        assert.equal(status.policy?.writable.some((entry) => entry.path === missing), false);
+        assert.ok(status.notes.some((note) => /does not exist yet/.test(note)), status.notes.join("; "));
     });
 
-    it("does not create a missing entry that is shaped like a single file", () => {
+    it("does not create a missing file entry either", () => {
         const instance = controller();
-        const created = join(home, "single-file.conf");
-        assert.equal(existsSync(created), false);
+        const missing = join(home, "single-file.conf");
+        assert.equal(existsSync(missing), false);
 
         const status = session(instance, projectRoot, loaded({ allowWrite: ["~/single-file.conf"] }));
 
-        assert.equal(existsSync(created), false);
-        assert.ok(status.policy?.writable.some((entry) => entry.path === created && entry.form === "file"));
+        assert.equal(existsSync(missing), false);
+        assert.equal(status.policy?.writable.some((entry) => entry.path === missing), false);
+        assert.ok(status.notes.some((note) => /does not exist yet/.test(note)));
     });
 
-    it("reports a directory entry it cannot create instead of pretending it is granted", () => {
+    it("does not create anything for a path under a file", () => {
         const blocker = join(fixtureRoot, "blocker-file");
         writeFileSync(blocker, "not a directory");
+        const child = join(blocker, "child");
 
         const instance = controller();
         const status = session(instance, projectRoot, loaded({ allowWrite: [`${blocker}/child/`] }));
 
-        assert.match(status.problems.join(" "), /could not create the directory/);
+        assert.equal(existsSync(child), false);
+        assert.equal(status.policy?.writable.some((entry) => entry.path === child), false);
+        assert.ok(status.notes.some((note) => /does not exist yet/.test(note)));
     });
 });

@@ -22,8 +22,7 @@ const samplePolicy: CompiledPolicy = {
     ],
     denied: [
         { path: "/home/u/.pi/minibox.json", form: "file", source: "builtin" },
-        { path: "/proj/.env", form: "file", source: "config" },
-        { path: "/proj/.git/hooks", form: "dir", source: "config" },
+        { path: "/tmp/minibox-profiles", form: "dir", source: "builtin" },
     ],
     devices: ["/dev/null", "/dev/fd"],
     profileDir: "/tmp/minibox-profiles",
@@ -45,10 +44,8 @@ describe("buildSeatbeltProfile", () => {
                 '(allow file-write* (literal "/etc/hosts-probe"))',
                 '(allow file-write* (literal "/dev/null"))',
                 '(allow file-write* (literal "/dev/fd"))',
-                '(deny file-write* (subpath "/proj/.git/hooks"))',
-                '(deny file-write* (subpath "/home/u/.pi/minibox.json"))',
-                '(deny file-write* (subpath "/proj/.env"))',
                 '(deny file-write* (subpath "/tmp/minibox-profiles"))',
+                '(deny file-write* (subpath "/home/u/.pi/minibox.json"))',
                 "",
             ].join("\n"),
         );
@@ -120,8 +117,11 @@ describe("macOS kernel enforcement", { skip: process.platform !== "darwin" }, ()
     const profilePath = join(profileDir, "probe.sb");
 
     before(() => {
-        mkdirSync(join(projectRoot, ".git", "hooks"), { recursive: true });
+        mkdirSync(projectRoot, { recursive: true });
         mkdirSync(profileDir, { recursive: true });
+        // A whitelisted entry stays inactive while it is missing, because minibox
+        // never creates files itself; seed it so the rule becomes a single-file allow.
+        writeFileSync(literalPath, "seed\n");
 
         const { policy } = compilePolicy({
             platform: "darwin",
@@ -130,7 +130,6 @@ describe("macOS kernel enforcement", { skip: process.platform !== "darwin" }, ()
             agentDir: join(fixtureRoot, "home", ".pi"),
             configPath: join(fixtureRoot, "home", ".pi", "minibox.json"),
             allowWrite: [literalPath],
-            denyWrite: [".env", ".git/hooks"],
             tempDirs: [],
             profileDir,
         });
@@ -155,22 +154,6 @@ describe("macOS kernel enforcement", { skip: process.platform !== "darwin" }, ()
 
         assert.notEqual(result.status, 0);
         assert.equal(existsSync(outsidePath), false);
-    });
-
-    it("refuses a denied file inside the project root", () => {
-        const result = run(`echo secret > ${join(projectRoot, ".env")}`);
-
-        assert.notEqual(result.status, 0);
-        assert.equal(existsSync(join(projectRoot, ".env")), false);
-    });
-
-    it("refuses a denied subtree while allowing its parent", () => {
-        const hook = join(projectRoot, ".git", "hooks", "pre-commit");
-        const config = join(projectRoot, ".git", "config");
-
-        assert.notEqual(run(`echo bad > ${hook}`).status, 0);
-        assert.equal(existsSync(hook), false);
-        assert.equal(run(`echo ok > ${config}`).status, 0);
     });
 
     it("allows a whitelisted single file but not its sibling", () => {

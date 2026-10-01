@@ -199,7 +199,6 @@ export {
     BWRAP_USERNS_HINT,
     buildBwrapArgs,
     isUserNamespaceFailure,
-    materializeDenyPath,
     probeBwrap,
     type BwrapProbe,
 } from "./src/bwrap.ts";
@@ -218,7 +217,6 @@ export {
 export {
     createMiniboxConfigCache,
     DEFAULT_ALLOW_WRITE,
-    DEFAULT_DENY_WRITE,
     loadMiniboxConfig,
     miniboxConfigPath,
     MiniboxConfigWriteError,

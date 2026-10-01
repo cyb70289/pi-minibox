@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -34,7 +34,7 @@ before(() => {
 after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
 const config: LoadedMiniboxConfig = {
-    config: { version: 1, enabled: true, allowWrite: [], denyWrite: [".env"] },
+    config: { version: 1, enabled: true, allowWrite: [] },
     problems: [],
     notes: [],
     seeded: false,
@@ -163,17 +163,17 @@ describe("createWriteGuard while minibox is on", () => {
         assert.deepEqual(recorded, []);
     });
 
-    it("blocks a denied rule without offering a dialog", async () => {
+    it("blocks a write to a minibox-internal file without offering a dialog", async () => {
         const controller = makeController();
         const { recorded, recordApproval } = approvals();
         const { ctx, calls } = makeContext();
         const guard = createWriteGuard({ controller, recordApproval });
-        const event = writeEvent(join(projectRoot, ".env"));
+        const event = writeEvent(configPath);
 
         const result = await guard(event, ctx);
 
         assert.equal(result?.block, true);
-        assert.match(result?.reason ?? "", /write-denied/);
+        assert.match(result?.reason ?? "", /write-blocked/);
         assert.equal(calls.length, 0);
         assert.deepEqual(recorded, []);
     });
@@ -229,6 +229,7 @@ describe("createWriteGuard while minibox is on", () => {
         const { ctx, calls } = makeContext();
         const guard = createWriteGuard({ controller, recordApproval });
         const target = join(outsideDir, "already.txt");
+        writeFileSync(target, "x");
         controller.addSessionGrant(target);
 
         assert.equal(await guard(writeEvent(target), ctx), undefined);

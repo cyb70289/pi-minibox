@@ -48,11 +48,6 @@ function labelFor(entry: WriteEntry, kind: PathKind): string {
     return `${displayPath(entry.path)}${form}  [${entry.source}]${missing}`;
 }
 
-function missingDirectoryHint(entry: WriteEntry, kind: PathKind): string | undefined {
-    if (entry.form !== "file" || kind !== "missing") return undefined;
-    return `minibox: "${entry.template ?? entry.path}" does not exist; it is granted as a single file. Add a trailing slash if you meant a directory.`;
-}
-
 function section(title: string, lines: readonly string[]): string {
     return lines.length === 0 ? `${title}: none` : `${title}:\n${lines.map((line) => `  ${line}`).join("\n")}`;
 }
@@ -95,17 +90,11 @@ function renderPolicy(policy: CompiledPolicy): string {
     const devices = policy.devices.map((path) => `${path}  [device]`);
     lines.push(section("writable", [...writable, ...devices]));
 
-    const denied = policy.denied.map((entry) => `${displayPath(entry.path)}  [${entry.source}]`);
-    if (policy.profileDir !== undefined) denied.push(`${displayPath(policy.profileDir)}  [internal]`);
+    const denied = policy.denied.map((entry) => {
+        const source = entry.path === policy.profileDir ? "internal" : entry.source;
+        return `${displayPath(entry.path)}  [${source}]`;
+    });
     lines.push(section("denied", denied));
-
-    const hints = policy.writable
-        .map((entry) => missingDirectoryHint(entry, pathKind(entry.path)))
-        .filter((hint): hint is string => hint !== undefined);
-    if (hints.length > 0) {
-        lines.push("");
-        lines.push(section("hints", hints));
-    }
 
     return lines.join("\n");
 }

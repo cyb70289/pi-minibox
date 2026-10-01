@@ -63,10 +63,10 @@ function writableSummary(policy: CompiledPolicy): string {
     return `${policy.projectRoot} (project) and the paths in ${policy.configPath}`;
 }
 
-function deniedMessage(path: string, policy: CompiledPolicy, deniedBy: string): string {
+function deniedMessage(path: string, deniedBy: string): string {
     return [
-        `minibox: ${path} is write-denied (rule ${deniedBy}). Nothing was written.`,
-        `That rule lives in ${policy.configPath}; only the user can change it. Do not retry this path.`,
+        `minibox: ${path} is write-blocked because ${deniedBy} is protected. Nothing was written.`,
+        "These are minibox's own files; the rule is not configurable. Do not retry this path.",
     ].join(" ");
 }
 
@@ -167,7 +167,7 @@ export function createWriteGuard(
         }
 
         if (decision.reason === "denied") {
-            return { block: true, reason: deniedMessage(decision.path, policy, decision.deniedBy ?? "unknown") };
+            return { block: true, reason: deniedMessage(decision.path, decision.deniedBy ?? "unknown") };
         }
 
         if (!ctx.hasUI) return { block: true, reason: noUiMessage(decision.path, policy) };

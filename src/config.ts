@@ -42,19 +42,11 @@ export const DEFAULT_ALLOW_WRITE: readonly string[] = Object.freeze([
     "~/.deno/",
 ]);
 
-/**
- * Paths that stay non-writable even inside the project. The packaged defaults
- * mirror the ones a shell-level write guard usually needs: secrets and the
- * directory git will execute hooks from.
- */
-export const DEFAULT_DENY_WRITE: readonly string[] = Object.freeze([".env", ".env.local", ".git/hooks"]);
-
 /** The parsed contents of `minibox.json`. */
 export type MiniboxConfig = {
     readonly version: number;
     readonly enabled: boolean;
     readonly allowWrite: readonly string[];
-    readonly denyWrite: readonly string[];
 };
 
 /** The config minibox uses when no file exists yet. */
@@ -63,7 +55,6 @@ export function defaultMiniboxConfig(): MiniboxConfig {
         version: MINIBOX_CONFIG_VERSION,
         enabled: true,
         allowWrite: DEFAULT_ALLOW_WRITE,
-        denyWrite: DEFAULT_DENY_WRITE,
     };
 }
 
@@ -134,7 +125,7 @@ function parseConfigObject(raw: unknown): { config: MiniboxConfig; problems: str
 
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
         return {
-            config: { ...defaults, allowWrite: [], denyWrite: [] },
+            config: { ...defaults, allowWrite: [] },
             problems: ["minibox.json must contain a JSON object; using no write rules from it."],
             notes,
         };
@@ -144,6 +135,9 @@ function parseConfigObject(raw: unknown): { config: MiniboxConfig; problems: str
     const known = new Set(["version", "enabled", "allowWrite", "denyWrite"]);
     for (const key of Object.keys(source)) {
         if (!known.has(key)) notes.push(`minibox.json has an unknown key "${key}"; it is ignored.`);
+    }
+    if (source.denyWrite !== undefined) {
+        notes.push('minibox.json "denyWrite" is no longer supported; deny rules were removed and this list is ignored.');
     }
 
     if (source.version !== undefined && source.version !== MINIBOX_CONFIG_VERSION) {
@@ -161,17 +155,17 @@ function parseConfigObject(raw: unknown): { config: MiniboxConfig; problems: str
         }
     }
 
-    const readList = (key: "allowWrite" | "denyWrite"): string[] => {
-        const value = source[key];
-        if (value === undefined) return [...defaults[key]];
+    const allowWrite = (() => {
+        const value = source.allowWrite;
+        if (value === undefined) return [...defaults.allowWrite];
         if (!isStringArray(value)) {
-            problems.push(`minibox.json "${key}" must be an array of path strings; ignoring it.`);
+            problems.push('minibox.json "allowWrite" must be an array of path strings; ignoring it.');
             return [];
         }
         return value;
-    };
+    })();
 
-    return { config: { version: MINIBOX_CONFIG_VERSION, enabled, allowWrite: readList("allowWrite"), denyWrite: readList("denyWrite") }, problems, notes };
+    return { config: { version: MINIBOX_CONFIG_VERSION, enabled, allowWrite }, problems, notes };
 }
 
 /**
@@ -195,7 +189,7 @@ export function loadMiniboxConfig(configPath: string, seams: ConfigSeams = {}): 
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
-            config: { ...defaultMiniboxConfig(), allowWrite: [], denyWrite: [] },
+            config: { ...defaultMiniboxConfig(), allowWrite: [] },
             problems: [`minibox.json could not be parsed (${message}); using no write rules from it.`],
             notes: [],
             seeded: false,
@@ -284,11 +278,14 @@ export function setMiniboxEnabled(configPath: string, enabled: boolean, seams: C
 
 function updateDefaults(source: Record<string, unknown>): MiniboxConfig {
     const defaults = defaultMiniboxConfig();
+    // A `denyWrite` key from an older config is dropped here: the feature is
+    // gone, and silently keeping a rule that no longer does anything would be
+    // worse than removing it. Every other unknown key is preserved.
+    const { denyWrite: _removed, ...rest } = source;
     return {
-        ...source,
+        ...rest,
         version: MINIBOX_CONFIG_VERSION,
         enabled: typeof source.enabled === "boolean" ? source.enabled : defaults.enabled,
         allowWrite: isStringArray(source.allowWrite) ? source.allowWrite : [...defaults.allowWrite],
-        denyWrite: isStringArray(source.denyWrite) ? source.denyWrite : [...defaults.denyWrite],
     } as MiniboxConfig;
 }

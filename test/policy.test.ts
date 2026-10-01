@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -29,7 +29,7 @@ before(() => {
 
 after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
-const baseInput = { platform: "darwin", projectRoot, home, agentDir, configPath, allowWrite: [], denyWrite: [] };
+const baseInput = { platform: "darwin", projectRoot, home, agentDir, configPath, allowWrite: [] };
 
 /**
  * Most tests isolate themselves from the real temp tree: the fixture lives under
@@ -92,12 +92,17 @@ describe("compilePolicy baselines", () => {
 
 describe("compilePolicy entries", () => {
     it("resolves tilde, relative, and absolute entries", () => {
-        const { policy } = compile({ allowWrite: ["~/out/", "../sibling/out/", "/var/out/"] });
+        const tilde = join(home, "out");
+        const relative = join(fixtureRoot, "sibling", "out");
+        const absolute = join(fixtureRoot, "absolute-out");
+        for (const dir of [tilde, relative, absolute]) mkdirSync(dir, { recursive: true });
+
+        const { policy } = compile({ allowWrite: ["~/out/", "../sibling/out/", absolute] });
         const paths = policy.writable.map((entry) => `${entry.path}:${entry.form}`);
 
-        assert.ok(paths.includes(`${join(home, "out")}:dir`));
-        assert.ok(paths.includes(`${join(fixtureRoot, "sibling", "out")}:dir`));
-        assert.ok(paths.includes(`${canonicalizePath("/var/out")}:dir`));
+        assert.ok(paths.includes(`${tilde}:dir`));
+        assert.ok(paths.includes(`${relative}:dir`));
+        assert.ok(paths.includes(`${canonicalizePath(absolute)}:dir`));
     });
 
     it("treats an existing directory as a subtree even without a marker", () => {
@@ -111,19 +116,36 @@ describe("compilePolicy entries", () => {
         );
     });
 
-    it("treats a missing entry without a marker as a single file", () => {
+    it("treats an existing file without a marker as a single file", () => {
+        const file = join(home, "new-file.txt");
+        writeFileSync(file, "x");
+
         const { policy } = compile({ allowWrite: ["~/new-file.txt"] });
 
-        assert.ok(policy.writable.some((entry) => entry.path === join(home, "new-file.txt") && entry.form === "file"));
+        assert.ok(policy.writable.some((entry) => entry.path === file && entry.form === "file"));
+    });
+
+    it("leaves a missing entry inactive and says so instead of creating it", () => {
+        const missing = join(home, "never-made");
+
+        const { policy, notes } = compile({ allowWrite: ["~/never-made/"] });
+
+        assert.equal(existsSync(missing), false, "minibox must not create the entry");
+        assert.equal(policy.writable.some((entry) => entry.path === missing), false);
+        assert.ok(notes.some((note) => /does not exist yet/.test(note)), notes.join("; "));
     });
 
     it("normalizes a trailing subtree marker to the directory form", () => {
+        const build = join(home, "build");
+        mkdirSync(build, { recursive: true });
+
         const { policy } = compile({ allowWrite: ["~/build/**"] });
 
-        assert.ok(policy.writable.some((entry) => entry.path === join(home, "build") && entry.form === "dir"));
+        assert.ok(policy.writable.some((entry) => entry.path === build && entry.form === "dir"));
     });
 
     it("drops an entry that is already inside the project root", () => {
+        mkdirSync(join(projectRoot, "build"), { recursive: true });
         const { policy } = compile({ allowWrite: ["build/**"] });
 
         assert.equal(policy.writable.some((entry) => entry.source === "config"), false);
@@ -151,11 +173,14 @@ describe("compilePolicy entries", () => {
     });
 
     it("records session grants separately", () => {
-        const { policy } = compile({ sessionPaths: ["/var/granted.txt"] });
+        const grantedPath = join(fixtureRoot, "granted.txt");
+        writeFileSync(grantedPath, "x");
 
-        const granted = policy.writable.find((entry) => entry.path === canonicalizePath("/var/granted.txt"));
+        const { policy } = compile({ sessionPaths: [grantedPath] });
+
+        const granted = policy.writable.find((entry) => entry.path === canonicalizePath(grantedPath));
         assert.equal(granted?.source, "session");
-        assert.equal(granted?.template, "/var/granted.txt");
+        assert.equal(granted?.template, grantedPath);
     });
 
     it("denies the profile directory when the controller supplies one", () => {
@@ -163,22 +188,11 @@ describe("compilePolicy entries", () => {
         const { policy } = compile({ profileDir });
 
         assert.equal(policy.profileDir, canonicalizePath(profileDir));
-    });
-});
-
-describe("compilePolicy deny rules", () => {
-    it("rejects a deny rule that contains the project root", () => {
-        for (const template of [".", "..", projectRoot]) {
-            const { problems } = compile({ denyWrite: [template] });
-            assert.match(problems[0] ?? "", /would deny every write in it/, `template ${template}`);
-        }
-    });
-
-    it("keeps a narrower deny rule beside a broader allow rule", () => {
-        const { policy } = compile({ allowWrite: [fixtureRoot], denyWrite: ["existing/secret.txt"] });
-
-        assert.equal(evaluateWriteAccess(join(projectRoot, "existing", "ok.txt"), policy).allowed, true);
-        assert.equal(evaluateWriteAccess(join(projectRoot, "existing", "secret.txt"), policy).allowed, false);
+        assert.ok(
+            policy.denied.some(
+                (entry) => entry.path === canonicalizePath(profileDir) && entry.source === "builtin",
+            ),
+        );
     });
 });
 
@@ -220,15 +234,6 @@ describe("evaluateWriteAccess", () => {
         const outside = evaluateWriteAccess("/etc/minibox-probe.txt", policy);
         assert.equal(outside.allowed, false);
         assert.equal(outside.allowed === false ? outside.reason : "", "outside-writable");
-    });
-
-    it("lets a deny rule beat the project root", () => {
-        const { policy } = compile({ denyWrite: [".env"] });
-
-        const decision = evaluateWriteAccess(join(projectRoot, ".env"), policy);
-        assert.equal(decision.allowed, false);
-        assert.equal(decision.allowed === false ? decision.reason : "", "denied");
-        assert.equal(decision.allowed === false ? decision.deniedBy : "", join(projectRoot, ".env"));
     });
 
     it("refuses the config file and the generated profile directory", () => {
