@@ -3,9 +3,10 @@
 > Deliberately simple sandbox: built for smooth agent work,
 > guarding against accidents, not adversaries.
 
-A write sandbox for Pi's foreground tools, enabled by default. It uses macOS
-Seatbelt (`sandbox-exec`) or Linux bubblewrap (`bwrap`). Reads and network
-access are unrestricted. This extension adds no info to system prompt.
+A write sandbox for Pi. It uses macOS Seatbelt (`sandbox-exec`) or
+Linux bubblewrap (`bwrap`). Reads and network access are unrestricted.
+
+This extension adds no info to system prompt.
 
 ```sh
 pi -e /path/to/pi-minibox      # try without installing

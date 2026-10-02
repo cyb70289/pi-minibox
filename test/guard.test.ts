@@ -15,7 +15,7 @@ import {
     guardedTarget,
     readSessionApprovals,
 } from "../src/guard.ts";
-import { MiniboxController } from "../src/state.ts";
+import { MiniboxBlockedError, MiniboxController } from "../src/state.ts";
 
 const fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "minibox-guard-")));
 const projectRoot = join(fixtureRoot, "proj");
@@ -248,6 +248,25 @@ describe("createWriteGuard while minibox is on", () => {
 
         assert.deepEqual(results, [undefined, undefined]);
         assert.equal(calls.length, 1);
+    });
+
+    it("still blocks file tools launched from home or the filesystem root", async () => {
+        for (const cwd of [home, "/"]) {
+            const controller = makeController();
+            controller.beginSession({ cwd, agentDir, configPath });
+            const { recorded, recordApproval } = approvals();
+            const { ctx, calls } = makeContext();
+            const guard = createWriteGuard({ controller, recordApproval });
+
+            for (const toolName of ["write", "edit"] as const) {
+                const event = { ...writeEvent(join(home, "inside.txt")), toolName } as ToolCallEvent;
+                const result = await guard(event, ctx);
+                assert.equal(result?.block, true);
+            }
+            assert.equal(calls.length, 0);
+            assert.deepEqual(recorded, []);
+            assert.throws(() => controller.requireLaunchPlan(), MiniboxBlockedError);
+        }
     });
 
     it("reports a refusal to confine instead of allowing the write", async () => {

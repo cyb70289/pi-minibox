@@ -148,15 +148,32 @@ describe("sessionStartNotices", () => {
         ]);
     });
 
-    it("shows an error instead of on when enabled protection failed", () => {
+    it("warns concisely when launched from home or the filesystem root", () => {
+        for (const [cwd, directory] of [[home, "home directory"], ["/", "filesystem root"]] as const) {
+            const controller = enabledController();
+            const status = controller.beginSession({ cwd, agentDir, configPath });
+            const notice = {
+                message: `minibox: ${directory} is not a project. Writes blocked. Relaunch from your working directory, or use /minibox off.`,
+                level: "warning",
+            };
+
+            assert.equal(status.state, "failed");
+            assert.deepEqual(sessionStartNotices(status), [notice]);
+            assert.deepEqual(enforcementFailureNotice(controller.enable()), notice);
+            assert.deepEqual(sessionStartNotices(controller.disable()), []);
+        }
+    });
+
+    it("shows an error for a missing backend or session", () => {
         for (const state of ["unavailable", "failed"] as const) {
-            const notices = sessionStartNotices(statusOf({ state, reason: "cannot start backend" }));
+            const status = statusOf({ state, projectRoot: undefined, reason: "cannot enforce protection" });
+            const notices = sessionStartNotices(status);
 
             assert.equal(notices.length, 1);
             assert.equal(notices[0]?.level, "error");
             assert.match(notices[0]?.message ?? "", /will block writes it cannot confine/);
             assert.equal(notices[0]?.message.includes("minibox on"), false);
-            assert.deepEqual(enforcementFailureNotice(statusOf({ state, reason: "cannot start backend" })), notices[0]);
+            assert.deepEqual(enforcementFailureNotice(status), notices[0]);
         }
         assert.equal(enforcementFailureNotice(statusOf({ state: "enabled" })), undefined);
     });

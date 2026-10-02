@@ -33,6 +33,15 @@ export function displayPath(path: string, home = homedir()): string {
 /** Explain why an enabled minibox cannot actually confine writes. */
 export function enforcementFailureNotice(status: MiniboxStatus): MiniboxNotice | undefined {
     if (status.state !== "unavailable" && status.state !== "failed") return undefined;
+    // With a captured project root, `failed` means launch from home or `/`.
+    // Keep blocking tools, but show a short warning rather than a backend error.
+    if (status.state === "failed" && status.projectRoot !== undefined) {
+        const directory = status.projectRoot === "/" ? "filesystem root" : "home directory";
+        return {
+            message: `minibox: ${directory} is not a project. Writes blocked. Relaunch from your working directory, or use /minibox off.`,
+            level: "warning",
+        };
+    }
     return { message: `minibox is ${status.state} and will block writes it cannot confine. ${status.reason}`, level: "error" };
 }
 
