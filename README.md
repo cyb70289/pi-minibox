@@ -9,8 +9,7 @@ Linux bubblewrap (`bwrap`). Reads and network access are unrestricted.
 This extension adds no info to system prompt.
 
 ```sh
-pi -e /path/to/pi-minibox      # try without installing
-pi install /path/to/pi-minibox # install
+pi install https://github.com/cyb70289/pi-minibox
 ```
 
 Linux requires `bwrap` on `PATH` **and** permission to create a sandbox. If
