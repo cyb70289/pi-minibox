@@ -6,7 +6,7 @@ import { after, before, describe, it } from "node:test";
 
 import type { LoadedMiniboxConfig } from "../src/config.ts";
 import { inactiveEntryNote } from "../src/policy.ts";
-import { policyLists, displayPath, enforcementFailureNotice, formatStatusReport, sessionStartNotices } from "../src/status.ts";
+import { policyLists, displayPath, enforcementFailureNotice, formatStatusReport, restoredOffNotice, sessionStartNotices } from "../src/status.ts";
 import { MiniboxController, type MiniboxStatus } from "../src/state.ts";
 
 const fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "minibox-status-")));
@@ -125,6 +125,16 @@ describe("sessionStartNotices", () => {
         for (const state of ["inactive", "disabled"] as const) {
             assert.deepEqual(sessionStartNotices(statusOf({ state, problems: ["bad json"], notes: ["note"] })), []);
         }
+    });
+
+    it("warns separately when a resumed session restores an explicit off", () => {
+        assert.deepEqual(restoredOffNotice(statusOf({ state: "disabled" })), {
+            message:
+                "minibox is OFF for this session (restored from the session). Protected writes run unconfined. Use /minibox on to re-enable.",
+            level: "warning",
+        });
+        assert.equal(restoredOffNotice(statusOf({ state: "enabled" })), undefined);
+        assert.equal(restoredOffNotice(statusOf({ state: "inactive" })), undefined);
     });
 
     it("reports config problems after the enabled startup status", () => {

@@ -57,10 +57,17 @@ replaces its defaults. Changes take effect on the next protected operation.
 
 ```text
 /minibox              show status and rules
-/minibox on|off       change protection for this session
+/minibox on|off       change protection for this session (remembered across pi -c)
 /minibox default on   enable now and persist the default
 /minibox default off  disable now and persist the default
 ```
+
+An explicit `on`/`off` choice is stored in the session file, so a `pi -c`
+continuation and `/tree` navigation restore it; `minibox.json` is not changed.
+The active branch decides: an abandoned branch's choice does not come back. A
+session resumed with protection off shows a warning at startup. The `default`
+form writes the global default, clears the session choice, and records that
+clear so an older choice cannot override it on resume.
 
 Only the operator can change minibox state with these commands; the model cannot
 switch it off. If protection is on but cannot be enforced (missing backend, unusable `bwrap`,

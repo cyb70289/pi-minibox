@@ -20,7 +20,7 @@ import type { ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@eare
 import { pathKind } from "./paths.ts";
 import { displayPath } from "./status.ts";
 import { evaluateWriteAccess, type CompiledPolicy } from "./policy.ts";
-import type { MiniboxController, MiniboxStatus } from "./state.ts";
+import type { BranchEntryLike, MiniboxController, MiniboxStatus } from "./state.ts";
 
 /** Session entry type used to remember confirmed paths across `pi -c`. */
 export const APPROVAL_ENTRY_TYPE = "minibox-approval";
@@ -28,12 +28,6 @@ export const APPROVAL_ENTRY_TYPE = "minibox-approval";
 /** How long the confirmation box waits before it is treated as a refusal. */
 export const CONFIRM_TIMEOUT_MS = 60_000;
 
-/** The shape of the session entries this module reads back. */
-export type BranchEntryLike = {
-    readonly type?: string;
-    readonly customType?: string;
-    readonly data?: unknown;
-};
 
 /**
  * Rebuild the session's confirmed paths from the active branch.

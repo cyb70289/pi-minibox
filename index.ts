@@ -31,8 +31,8 @@ import {
 } from "./src/config.ts";
 import { APPROVAL_ENTRY_TYPE, createWriteGuard, readSessionApprovals } from "./src/guard.ts";
 import { createMiniboxBashOperations } from "./src/shell.ts";
-import { enforcementFailureNotice, formatStatusReport, sessionStartNotices } from "./src/status.ts";
-import { MiniboxController } from "./src/state.ts";
+import { enforcementFailureNotice, formatStatusReport, restoredOffNotice, sessionStartNotices } from "./src/status.ts";
+import { MiniboxController, OVERRIDE_ENTRY_TYPE, readSessionOverride } from "./src/state.ts";
 
 const COMMAND_NAME = "minibox";
 const COMMAND_DESCRIPTION = "Show or change the minibox write sandbox";
@@ -52,6 +52,15 @@ export default function piMinibox(pi: ExtensionAPI): void {
     };
 
     const innerBash = createMiniboxBashOperations(controller, { shellPath: () => shellPath });
+
+    // A continuation or a /tree move rebuilds session-local state from the new
+    // active branch. Abandoned branches must not keep contributing.
+    const restoreSessionState = (ctx: ExtensionContext): boolean | undefined => {
+        const branch = ctx.sessionManager.getBranch();
+        const override = readSessionOverride(branch);
+        controller.restoreSession(override, readSessionApprovals(branch));
+        return override;
+    };
 
     // Refresh before every protected operation, so an edit to minibox.json takes
     // effect on the next write rather than on the next session.
@@ -97,13 +106,17 @@ export default function piMinibox(pi: ExtensionAPI): void {
         controller.applyConfig(configPath, loaded);
         controller.beginSession({ cwd: ctx.cwd, agentDir: getAgentDir(), configPath });
 
-        // Approvals written earlier in this session file — including one made
-        // before a `pi -c` continuation — come back on the active branch only.
-        for (const path of readSessionApprovals(ctx.sessionManager.getBranch())) {
-            controller.addSessionGrant(path);
-        }
+        // Approvals and an explicit on/off choice written earlier in this session
+        // file — including before a `pi -c` continuation — come back on the
+        // active branch only.
+        const restoredOverride = restoreSessionState(ctx);
 
-        for (const notice of sessionStartNotices(controller.status())) {
+        const status = controller.status();
+        const notices = sessionStartNotices(status);
+        const restoredOff = restoredOverride === false ? restoredOffNotice(status) : undefined;
+        if (restoredOff !== undefined) notices.unshift(restoredOff);
+
+        for (const notice of notices) {
             // Pi renders info notices dim; override that only for the TUI's
             // positive startup status. RPC clients receive plain text.
             const message = ctx.mode === "tui" && notice.message === "minibox on"
@@ -111,6 +124,10 @@ export default function piMinibox(pi: ExtensionAPI): void {
                 : notice.message;
             ctx.ui.notify(message, notice.level);
         }
+    });
+
+    pi.on("session_tree", (_event, ctx: ExtensionContext) => {
+        restoreSessionState(ctx);
     });
 
     pi.on("session_shutdown", () => {
@@ -144,6 +161,9 @@ export default function piMinibox(pi: ExtensionAPI): void {
         const enabled = value === "on";
         if (!persisted) {
             const status = enabled ? controller.enable() : controller.disable();
+            // Record the choice inside the session so `pi -c` restores it. This
+            // is an entry, not minibox.json: the persisted default is unchanged.
+            pi.appendEntry(OVERRIDE_ENTRY_TYPE, { enabled });
             const failure = enforcementFailureNotice(status);
             if (failure) {
                 ctx.ui.notify(failure.message, failure.level);
@@ -162,6 +182,9 @@ export default function piMinibox(pi: ExtensionAPI): void {
             const config = setMiniboxEnabled(configPath, enabled);
             configCache.invalidate();
             const status = controller.applyDefault(config);
+            // applyDefault drops the session override, so record that clear. An
+            // older on/off entry must not override this later choice on resume.
+            pi.appendEntry(OVERRIDE_ENTRY_TYPE, { enabled: null });
             const failure = enforcementFailureNotice(status);
             if (failure) {
                 ctx.ui.notify(`minibox default is now on (${configPath}), but ${failure.message}`, failure.level);

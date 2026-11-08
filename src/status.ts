@@ -45,6 +45,16 @@ export function enforcementFailureNotice(status: MiniboxStatus): MiniboxNotice |
     return { message: `minibox is ${status.state} and will block writes it cannot confine. ${status.reason}`, level: "error" };
 }
 
+/** Warn once when a session start replays an explicit `/minibox off` from the branch. */
+export function restoredOffNotice(status: MiniboxStatus): MiniboxNotice | undefined {
+    if (status.state !== "disabled") return undefined;
+    return {
+        message:
+            "minibox is OFF for this session (restored from the session). Protected writes run unconfined. Use /minibox on to re-enable.",
+        level: "warning",
+    };
+}
+
 /** The status and diagnostics worth showing once when a session starts. */
 export function sessionStartNotices(status: MiniboxStatus): MiniboxNotice[] {
     if (status.state === "inactive" || status.state === "disabled") return [];

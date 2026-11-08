@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import { canonicalizePath } from "../src/paths.ts";
-import { MiniboxController, MiniboxBlockedError, describeBackendSupport, executableFromPath } from "../src/state.ts";
+import { MiniboxController, MiniboxBlockedError, OVERRIDE_ENTRY_TYPE, describeBackendSupport, executableFromPath, readSessionOverride } from "../src/state.ts";
 import type { LoadedMiniboxConfig } from "../src/config.ts";
 
 const fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "minibox-state-")));
@@ -123,6 +123,38 @@ describe("describeBackendSupport", () => {
 
         assert.equal(support.supported, false);
         assert.match(support.supported === false ? support.reason : "", /win32/);
+    });
+});
+
+describe("readSessionOverride", () => {
+    const entry = (enabled: unknown) => ({ type: "custom", customType: OVERRIDE_ENTRY_TYPE, data: { enabled } });
+
+    it("takes the last valid choice from the active branch", () => {
+        const branch = [
+            { type: "message" },
+            { type: "custom", customType: "something-else", data: { enabled: true } },
+            entry(true),
+            entry(false),
+        ];
+
+        assert.equal(readSessionOverride(branch), false);
+    });
+
+    it("lets a recorded clear undo an older choice", () => {
+        assert.equal(readSessionOverride([entry(false), entry(null)]), undefined);
+        assert.equal(readSessionOverride([entry(true), entry(null), entry(false)]), false);
+    });
+
+    it("ignores malformed entries and an empty branch", () => {
+        const branch = [
+            { type: "custom", customType: OVERRIDE_ENTRY_TYPE },
+            { type: "custom", customType: OVERRIDE_ENTRY_TYPE, data: { enabled: "off" } },
+            { type: "custom", customType: OVERRIDE_ENTRY_TYPE, data: { enabled: 0 } },
+            { type: "custom", customType: OVERRIDE_ENTRY_TYPE, data: null },
+        ];
+
+        assert.equal(readSessionOverride(branch), undefined);
+        assert.equal(readSessionOverride([]), undefined);
     });
 });
 
@@ -329,6 +361,21 @@ describe("MiniboxController", () => {
 
         instance.dispose();
         assert.ok(existsSync(profileDir), "the injector owns the directory it supplied");
+    });
+
+    it("restores an override and grants replayed from the session branch", () => {
+        const instance = controller();
+        session(instance);
+
+        instance.restoreSession(false, ["/etc/hosts"]);
+        assert.equal(instance.status().state, "disabled");
+        assert.deepEqual(instance.sessionGrants(), ["/etc/hosts"]);
+
+        // A branch without the off entry falls back to the config default and
+        // drops approvals that only exist on the abandoned branch.
+        instance.restoreSession(undefined, []);
+        assert.equal(instance.status().state, "enabled");
+        assert.deepEqual(instance.sessionGrants(), []);
     });
 
     it("reports a reload only when something actually changed", () => {

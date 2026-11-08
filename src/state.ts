@@ -210,6 +210,36 @@ const NO_SESSION_REASON = "No session has started yet, so no canonical project r
 
 const EMPTY_CONFIG: MiniboxConfig = { version: 1, enabled: true, allowWrite: [], allowDevices: [] };
 
+/** Session entry type used to remember an explicit `/minibox on|off` across `pi -c`. */
+export const OVERRIDE_ENTRY_TYPE = "minibox-override";
+
+/** The shape of the session branch entries this module reads back. */
+export type BranchEntryLike = {
+    readonly type?: string;
+    readonly customType?: string;
+    readonly data?: unknown;
+};
+
+/**
+ * Rebuild the session override from the active branch, where the last valid
+ * entry wins.
+ *
+ * `{ enabled: null }` records that `/minibox default` cleared the override. It
+ * must replay as a clear; otherwise an older `off` entry would come back to
+ * life and contradict the operator's later choice. Malformed entries are
+ * ignored, matching the approval log's tolerance for old or foreign data.
+ */
+export function readSessionOverride(branch: Iterable<BranchEntryLike>): boolean | undefined {
+    let override: boolean | undefined;
+    for (const entry of branch) {
+        if (entry.type !== "custom" || entry.customType !== OVERRIDE_ENTRY_TYPE) continue;
+        const data = entry.data as { enabled?: unknown } | undefined;
+        if (data?.enabled === true || data?.enabled === false) override = data.enabled;
+        else if (data?.enabled === null) override = undefined;
+    }
+    return override;
+}
+
 export type BeginSessionInput = {
     readonly cwd: string;
     readonly agentDir: string;
@@ -301,6 +331,19 @@ export class MiniboxController {
     applyDefault(config: MiniboxConfig): MiniboxStatus {
         this.#config = config;
         this.#sessionOverride = undefined;
+        return this.status();
+    }
+
+    /**
+     * Rebuild session-local state from the active branch.
+     *
+     * Used on a session start (including a `pi -c` continuation) and after a
+     * `/tree` move, where the abandoned branch must stop contributing its
+     * override and approved paths.
+     */
+    restoreSession(override: boolean | undefined, grants: readonly string[]): MiniboxStatus {
+        this.#sessionOverride = override;
+        this.#grants = [...grants];
         return this.status();
     }
 
