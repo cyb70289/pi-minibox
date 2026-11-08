@@ -31,6 +31,7 @@ import {
 } from "./src/config.ts";
 import { APPROVAL_ENTRY_TYPE, createWriteGuard, readSessionApprovals } from "./src/guard.ts";
 import { createMiniboxBashOperations } from "./src/shell.ts";
+import { STARTUP_ENTRY_TYPE, startupEntryData, startupNoticeLines } from "./src/notice.ts";
 import { enforcementFailureNotice, formatStatusReport, restoredOffNotice, sessionStartNotices } from "./src/status.ts";
 import { MiniboxController, OVERRIDE_ENTRY_TYPE, readSessionOverride } from "./src/state.ts";
 
@@ -41,6 +42,27 @@ export default function piMinibox(pi: ExtensionAPI): void {
     const controller = new MiniboxController();
     const configPath = miniboxConfigPath(getAgentDir());
     const configCache = createMiniboxConfigCache(configPath);
+
+    // A card in the transcript, not a notify line: on `pi -c` the viewport
+    // settles at the newest message and a transient notice can be gone before
+    // it is read. The card is durable and sits below the latest message.
+    pi.registerEntryRenderer(STARTUP_ENTRY_TYPE, (entry, _options, theme) => {
+        let cachedWidth = -1;
+        let cached: string[] | undefined;
+        return {
+            render(width: number) {
+                if (width !== cachedWidth) {
+                    cachedWidth = width;
+                    cached = startupNoticeLines(entry.data, theme, width);
+                }
+                return cached ?? [];
+            },
+            invalidate() {
+                cachedWidth = -1;
+                cached = undefined;
+            },
+        };
+    });
 
     // Pi's shell setting is only readable once a session directory is known, so
     // it is resolved lazily and re-read on every session start.
@@ -116,13 +138,13 @@ export default function piMinibox(pi: ExtensionAPI): void {
         const restoredOff = restoredOverride === false ? restoredOffNotice(status) : undefined;
         if (restoredOff !== undefined) notices.unshift(restoredOff);
 
+        if (ctx.mode === "tui") {
+            if (notices.length > 0) pi.appendEntry(STARTUP_ENTRY_TYPE, startupEntryData(notices));
+            return;
+        }
+
         for (const notice of notices) {
-            // Pi renders info notices dim; override that only for the TUI's
-            // positive startup status. RPC clients receive plain text.
-            const message = ctx.mode === "tui" && notice.message === "minibox on"
-                ? ctx.ui.theme.bold(ctx.ui.theme.fg("success", notice.message))
-                : notice.message;
-            ctx.ui.notify(message, notice.level);
+            ctx.ui.notify(notice.message, notice.level);
         }
     });
 
@@ -145,7 +167,7 @@ export default function piMinibox(pi: ExtensionAPI): void {
     async function handleCommand(args: string, ctx: ExtensionContext): Promise<void> {
         const words = args.split(/\s+/).filter((word) => word !== "");
 
-        if (words.length === 0) {
+        if (words.length === 0 || (words.length === 1 && words[0] === "status")) {
             ctx.ui.notify(formatStatusReport(controller.status()), "info");
             return;
         }
@@ -154,7 +176,7 @@ export default function piMinibox(pi: ExtensionAPI): void {
         const value = persisted ? words[1] : words[0];
 
         if ((value !== "on" && value !== "off") || (persisted && words.length !== 2) || (!persisted && words.length !== 1)) {
-            ctx.ui.notify("Usage: /minibox [on|off|default on|default off]", "warning");
+            ctx.ui.notify("Usage: /minibox [status|on|off|default on|default off]", "warning");
             return;
         }
 

@@ -56,11 +56,14 @@ replaces its defaults. Changes take effect on the next protected operation.
   mounted; an empty array mounts no host devices.
 
 ```text
-/minibox              show status and rules
+/minibox [status]     show status and rules
 /minibox on|off       change protection for this session (remembered across pi -c)
 /minibox default on   enable now and persist the default
 /minibox default off  disable now and persist the default
 ```
+
+Startup status is also written to the transcript as a small card, so it stays
+visible after `pi -c` settles at the newest message.
 
 An explicit `on`/`off` choice is stored in the session file, so a `pi -c`
 continuation and `/tree` navigation restore it; `minibox.json` is not changed.
