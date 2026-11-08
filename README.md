@@ -6,7 +6,11 @@
 A write sandbox for Pi. It uses macOS Seatbelt (`sandbox-exec`) or
 Linux bubblewrap (`bwrap`). Reads and network access are unrestricted.
 
-This extension adds no info to system prompt.
+While protection is actually enforced, it adds one short `<minibox>` system
+prompt section telling the model writes may be blocked, so it stops and reports a
+blocked task instead of fighting the sandbox. The text is constant, so it is sent
+once when protection starts and re-sent only when minibox state changes: an
+unchanged session costs no prompt-cache misses, and a toggle costs one.
 
 ```sh
 pi install https://github.com/cyb70289/pi-minibox

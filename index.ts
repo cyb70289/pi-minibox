@@ -32,6 +32,7 @@ import {
 import { APPROVAL_ENTRY_TYPE, createWriteGuard, readSessionApprovals } from "./src/guard.ts";
 import { createMiniboxBashOperations } from "./src/shell.ts";
 import { STARTUP_ENTRY_TYPE, startupEntryData, startupNoticeLines } from "./src/notice.ts";
+import { MINIBOX_PROMPT_SECTION, miniboxPromptSection } from "./src/prompt.ts";
 import { enforcementFailureNotice, formatStatusReport, restoredOffNotice, sessionStartNotices } from "./src/status.ts";
 import { MiniboxController, OVERRIDE_ENTRY_TYPE, readSessionOverride } from "./src/state.ts";
 
@@ -73,6 +74,16 @@ export default function piMinibox(pi: ExtensionAPI): void {
         controller.reload(configPath, () => configCache.load());
     };
 
+    // The system prompt section is computed only when minibox state can change
+    // (session start or tree move, a command, or a config reload). Recomputing
+    // it on every prompt would add work and could make an unchanged session
+    // miss the prompt cache. Nothing is sent while it is undefined.
+    let promptSection: string | undefined;
+    const refreshPromptSection = (status = controller.status()): void => {
+        promptSection = miniboxPromptSection(status);
+    };
+    controller.onReload(() => refreshPromptSection());
+
     const innerBash = createMiniboxBashOperations(controller, { shellPath: () => shellPath });
 
     // A continuation or a /tree move rebuilds session-local state from the new
@@ -108,6 +119,15 @@ export default function piMinibox(pi: ExtensionAPI): void {
     // The same backend for operator-entered ! and !! commands.
     pi.on("user_bash", () => ({ operations }));
 
+    // Mutating `sections` lets Pi diff the prompt and send a system-message
+    // patch only when the section appears, changes, or disappears. Returning
+    // `systemPrompt` instead would replace and re-cache the whole prompt.
+    pi.on("before_agent_start", (event) => {
+        const sections = event.systemPromptOptions.sections;
+        if (promptSection === undefined) delete sections[MINIBOX_PROMPT_SECTION];
+        else sections[MINIBOX_PROMPT_SECTION] = promptSection;
+    });
+
     // The built-in write and edit tools are guarded at the call boundary, which
     // is the only place a dialog can be shown and the only place the path can be
     // canonicalized before Pi resolves it.
@@ -134,6 +154,7 @@ export default function piMinibox(pi: ExtensionAPI): void {
         const restoredOverride = restoreSessionState(ctx);
 
         const status = controller.status();
+        refreshPromptSection(status);
         const notices = sessionStartNotices(status);
         const restoredOff = restoredOverride === false ? restoredOffNotice(status) : undefined;
         if (restoredOff !== undefined) notices.unshift(restoredOff);
@@ -150,9 +171,12 @@ export default function piMinibox(pi: ExtensionAPI): void {
 
     pi.on("session_tree", (_event, ctx: ExtensionContext) => {
         restoreSessionState(ctx);
+        refreshPromptSection();
     });
 
     pi.on("session_shutdown", () => {
+        // Do not let a finished session's section leak into the next one.
+        promptSection = undefined;
         controller.dispose();
     });
 
@@ -183,6 +207,7 @@ export default function piMinibox(pi: ExtensionAPI): void {
         const enabled = value === "on";
         if (!persisted) {
             const status = enabled ? controller.enable() : controller.disable();
+            refreshPromptSection(status);
             // Record the choice inside the session so `pi -c` restores it. This
             // is an entry, not minibox.json: the persisted default is unchanged.
             pi.appendEntry(OVERRIDE_ENTRY_TYPE, { enabled });
@@ -204,6 +229,7 @@ export default function piMinibox(pi: ExtensionAPI): void {
             const config = setMiniboxEnabled(configPath, enabled);
             configCache.invalidate();
             const status = controller.applyDefault(config);
+            refreshPromptSection(status);
             // applyDefault drops the session override, so record that clear. An
             // older on/off entry must not override this later choice on resume.
             pi.appendEntry(OVERRIDE_ENTRY_TYPE, { enabled: null });
