@@ -122,7 +122,11 @@ describe("allowDevices", () => {
         assert.equal(policy.devices.some((path) => path === "/dev/dri"), false, "directories must not be bound");
     });
 
-    it("rejects unsupported patterns, non-dev paths, directories and symlinks; missing nodes are inactive", () => {
+    it("rejects unsupported patterns, non-dev paths, directories and symlinks; missing nodes are inactive", {
+        // The expected rejections depend on the Linux /dev layout: on macOS
+        // /dev/fd is a directory, not the symlink this case relies on.
+        skip: process.platform !== "linux",
+    }, () => {
         const { policy, problems, notes } = compile({
             platform: "linux",
             allowDevices: ["dev/null", "/etc/hosts", "/dev/", "/dev/*", "/dev/fd", "/dev/minibox-no-such-device", "/dev/nvi*dia"],

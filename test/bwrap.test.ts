@@ -63,7 +63,11 @@ describe("buildBwrapArgs", () => {
         assert.deepEqual(fileArgs.slice(0, 5), ["--ro-bind", "/", "/", "--dev", "/dev"]);
     });
 
-    it("binds procfs and sysfs read-write without making the root writable", () => {
+    it("binds procfs and sysfs read-write without making the root writable", {
+        // /proc and /sys exist only on Linux; buildBwrapArgs sees the host
+        // filesystem, so this argv shape cannot be checked on macOS.
+        skip: process.platform !== "linux",
+    }, () => {
         const { fileArgs } = plan();
         assert.deepEqual(fileArgs.slice(0, 5), ["--ro-bind", "/", "/", "--dev", "/dev"]);
         assert.ok(fileArgs.join(" ").includes("--bind /proc /proc"));
