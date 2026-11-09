@@ -17,8 +17,9 @@ import type { MiniboxStatus } from "./state.ts";
 export const MINIBOX_PROMPT_SECTION = "minibox";
 
 const SECTION_TEXT = [
-    "A minimal write sandbox is active. Shell commands and file writes outside the current project directory may be blocked or require user confirmation.",
-    "If an operation fails because of the sandbox and you cannot finish the task within these limits, stop and explain what was blocked. Do not bypass the sandbox. The user can allow the path in minibox.json or disable the sandbox (/minibox off) if necessary.",
+    "A minimal write sandbox is active. File writes outside the current project directory may be blocked or require user confirmation. sudo is blocked and will fail.",
+    "Temporary directories are writable. Additional allowed paths are configured in ~/.pi/agent/minibox.json.",
+    "If you cannot complete the task within these limits, stop and explain what was blocked. Do not bypass the sandbox. The user can disable the sandbox if necessary.",
 ].join("\n");
 
 /** The section content for a status, or undefined when nothing should be sent. */

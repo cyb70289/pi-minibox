@@ -28,11 +28,15 @@ describe("miniboxPromptSection", () => {
         const section = miniboxPromptSection(statusOf("enabled"));
         assert.ok(section !== undefined);
         assert.match(section, /minimal write sandbox is active/);
-        assert.match(section, /outside the current project directory/);
+        assert.match(section, /File writes outside the current project directory/);
         assert.match(section, /blocked or require user confirmation/);
+        assert.match(section, /sudo is blocked and will fail/);
+        assert.match(section, /Temporary directories are writable/);
+        assert.match(section, /Additional allowed paths are configured in ~\/\.pi\/agent\/minibox\.json/);
+        assert.match(section, /If you cannot complete the task within these limits/);
         assert.match(section, /stop and explain what was blocked/);
         assert.match(section, /Do not bypass the sandbox/);
-        assert.match(section, /\/minibox off/);
+        assert.match(section, /The user can disable the sandbox if necessary/);
     });
 
     it("stays silent in every state that is not enforcing", () => {
